@@ -25,7 +25,7 @@ def normalize_command(message):
     text=message.strip().casefold()
     if re.fullmatch(r'(?:иә[,!\s]+)?(?:қос|қосыңыз|қосшы)[.!\s]*',text): return 'да, добавь'
     if re.fullmatch(r'(?:жоқ|қоспа|қоспаңыз|бас тарту|болдырма)[.!\s]*',text): return 'нет'
-    if re.fullmatch(r'(?:себет(?:ті)?(?:\s+(?:көрсет|көрсетіңіз|аш|ашыңыз))?)[.!\s]*',text): return 'показать корзину'
+    if re.fullmatch(r'(?:себет(?:ті)?(?:\s+(?:көрсет|көрсету|көрсетіңіз|аш|ашыңыз))?)[.!\s]*',text): return 'показать корзину'
     return message
 
 
