@@ -32,11 +32,14 @@ class ProposalIn(BaseModel):
     quantity: float=Field(gt=0,le=100000,allow_inf_nan=False)
 
 class ConfirmIn(BaseModel):
-    confirmation_id: str=Field(min_length=10,max_length=100)
+    confirmation_id: str=Field(pattern=r'^[A-Za-z0-9_-]{10,100}$')
     confirmed: StrictBool=False
 
 class CancelIn(BaseModel):
-    confirmation_id: str=Field(min_length=10,max_length=100)
+    confirmation_id: str=Field(pattern=r'^[A-Za-z0-9_-]{10,100}$')
+
+class RemoveAttachmentsIn(BaseModel):
+    attachment_ids: list[str]=Field(max_length=8)
 
 def create_app(catalog=None,ai=None):
     catalog=catalog or Catalog(); ai=ai or AI(); sessions={}
@@ -85,7 +88,7 @@ def create_app(catalog=None,ai=None):
             s=Session(); sessions[s.id]=s
         s.touched=current
         if request.method=='POST':
-            if not secrets.compare_digest(request.headers.get('x-csrf-token',''),s.csrf):
+            if not secrets.compare_digest(request.headers.get('x-csrf-token','').encode('utf-8'),s.csrf.encode('utf-8')):
                 raise AppError('csrf','Сессия не подтверждена. Обновите страницу.',403)
             s.limit()
         return s
@@ -171,6 +174,21 @@ def create_app(catalog=None,ai=None):
             s.attachments[aid]=attachment
             return {'attachment_id':aid,**{k:v for k,v in attachment.items() if k!='image'}}
 
+    @app.post('/api/attachments/remove')
+    async def remove_attachments(body:RemoveAttachmentsIn,request:Request):
+        s=session(request)
+        async with s.lock:
+            # Only this session's pending uploads are affected; repeated removal is safe.
+            for aid in body.attachment_ids: s.attachments.pop(aid,None)
+            return {'removed':True}
+
+    @app.post('/api/chat/reset')
+    async def reset_chat(request:Request):
+        s=session(request)
+        async with s.lock:
+            s.history.clear(); s.last_products.clear(); s.attachments.clear(); s.pending=None
+            return {'cart':s.cart()}
+
     @app.post('/api/chat')
     async def chat(body:ChatIn,request:Request):
         s=session(request)
@@ -183,6 +201,8 @@ def create_app(catalog=None,ai=None):
                 # Record completed exchanges, including deterministic cart replies, exactly as displayed.
                 s.history.extend([{'role':'user','text':message},{'role':'assistant','text':text}])
                 s.history=s.history[-12:]
+                # The UI consumes uploads after a successful answer. Failed requests retain them for retry.
+                for aid in body.attachment_ids: s.attachments.pop(aid,None)
                 return chat_result(s,text,products,proposal,sources,warnings)
             affirmative=re.fullmatch(r'(?:да[,!\s]+)?добавь(?:те)?[.!\s]*',message,re.I)
             if affirmative and s.pending and not body.attachment_ids:

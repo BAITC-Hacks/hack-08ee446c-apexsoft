@@ -23,6 +23,7 @@ ChatResponse: {message_id:string, text:string, products:Product[], proposal:Prop
 - GET /api/health → {status:'ok',integrations}.
 - GET /api/session → тип выше.
 - POST /api/chat JSON {message:string,attachment_ids?:string[]} → ChatResponse. message: 1–3000 символов, до 4 attachment_ids из той же сессии. Точное «да, добавь» при текущем предложении подтверждает его; любое другое сообщение не означает подтверждения.
+- POST /api/chat/reset JSON {} → {cart:Cart}. Сбрасывает историю, найденные товары, предложение и вложения текущей сессии. Корзина и квитанции выполненных подтверждений сохраняются.
 - GET /api/products?q=... → {products:Product[],index_complete:boolean} (до 6 результатов).
 - GET /api/products/{id} → Product.
 - GET /api/products/{id}/alternatives → {products:Product[],warnings:string[]}.
@@ -31,6 +32,7 @@ ChatResponse: {message_id:string, text:string, products:Product[], proposal:Prop
 - POST /api/cart/cancel JSON {confirmation_id:string} → {cart:Cart}. Аннулирует текущее предложение этой сессии, если идентификатор совпадает. Не меняет состав корзины; повтор безопасен.
 - GET /api/cart → Cart. Маршрут UI /cart отображает актуальную корзину этой сессии. Заказ/оплата не реализованы и реальную корзину ekt.kz не изменяют.
 - POST /api/attachments multipart file → {attachment_id:string,name:string,extracted_text:string,kind:'document'|'image',warnings:string[]}. JPEG/PNG/PDF/DOCX/XLSX/XLS, до 8 MiB; хранятся только в памяти сессии. Изображение распознаёт OpenAI. Legacy .doc возвращает понятную ошибку преобразования в .docx.
+- POST /api/attachments/remove JSON {attachment_ids:string[]} → {removed:true}. До 8 идентификаторов. Освобождает загрузки только текущей сессии, повтор безопасен. Успешный /api/chat также освобождает использованные вложения; при ошибке они остаются доступны для повторного запроса.
 
 ## Ошибки
 

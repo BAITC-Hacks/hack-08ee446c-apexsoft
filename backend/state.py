@@ -64,7 +64,7 @@ async def confirm(session,catalog,confirmation_id,confirmed):
     if confirmation_id in session.receipts:
         return copy.deepcopy(session.receipts[confirmation_id])
     pending=session.pending
-    if not pending or not secrets.compare_digest(pending['proposal']['confirmation_id'],confirmation_id):
+    if not pending or not secrets.compare_digest(pending['proposal']['confirmation_id'].encode('utf-8'),confirmation_id.encode('utf-8')):
         raise AppError('confirmation_invalid','Предложение не найдено в этой сессии. Создайте новое.',403)
     if time.time()>pending['expires']:
         session.pending=None
