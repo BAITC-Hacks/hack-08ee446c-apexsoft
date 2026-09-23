@@ -36,11 +36,15 @@ def clean(value):
 def safe_url(value):
     if not isinstance(value, str): return None
     if value.startswith('/'): value = 'https://ekt.kz' + value
-    parsed = urlsplit(value)
-    return value if parsed.scheme == 'https' and parsed.hostname and not parsed.username else None
+    try:
+        parsed = urlsplit(value)
+        return value if parsed.scheme == 'https' and parsed.hostname and not parsed.username else None
+    except ValueError:
+        return None
 
 def normalize(raw, source='live', checked_at=None):
-    props = raw.get('properties') or {}
+    props = raw.get('properties')
+    if not isinstance(props, dict): props = {}
     name = clean(raw.get('name'))
     url = safe_url(raw.get('url')) or 'https://ekt.kz/'
     category = unquote(urlsplit(url).path.strip('/').split('/')[-2]) if '/' in urlsplit(url).path.strip('/') else ''
@@ -53,6 +57,12 @@ def normalize(raw, source='live', checked_at=None):
                 link = safe_url(entry)
                 if link: certificates.append({'name':'Документ из каталога', 'url':link})
     warnings=[]
+    stores=raw.get('stores')
+    if not isinstance(stores,list): stores=[]
+    warehouses=[{'name':clean(s.get('name')), 'stock':number(s.get('quantity'))} for s in stores if isinstance(s,dict)]
+    if (raw.get('stores') is not None and not isinstance(raw.get('stores'),list)
+            or len(warehouses)!=len(stores) or any(s['stock'] is None for s in warehouses)):
+        warnings.append('Данные по отдельным складам неполные. Неизвестный остаток не означает отсутствие товара; уточните его у менеджера.')
     name_amp = re.search(r'(?<![\d.])(\d+(?:[.,]\d+)?)\s*[АA](?![A-Za-zА-Яа-я])', name)
     prop_amp = re.search(r'\d+(?:[.,]\d+)?', str(props.get('NOMINALNYY_TOK','')))
     if name_amp and prop_amp and number(name_amp[1]) != number(prop_amp[0]):
@@ -64,11 +74,11 @@ def normalize(raw, source='live', checked_at=None):
         'price':number(raw.get('price')), 'currency':'KZT', 'stock':number(raw.get('quantity')),
         'min_quantity':step, 'quantity_step':step, 'image_url':safe_url(raw.get('image')),
         'product_url':url, 'specifications':specs, 'certificates':certificates,
-        'warehouses':[{'name':clean(s.get('name')), 'stock':number(s.get('quantity')) or 0} for s in raw.get('stores',[])],
+        'warehouses':warehouses,
         'warnings':warnings, 'source':source, 'checked_at':checked_at or now(), 'analogue_reason':None}
 
 def tokens(text):
-    text=text.lower().replace('ё','е')
+    text=clean(text).lower().replace('ё','е')
     # Equate common descriptions to catalogue naming without changing technical ratings.
     for a,b in [('автоматический выключатель','ав'),('автоматы','ав'),('автомат','ав'),('светодиод','led'),('лампочка','лампа')]:
         text=text.replace(a,b)
