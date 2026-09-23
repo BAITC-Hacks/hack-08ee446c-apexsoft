@@ -103,6 +103,9 @@ export const api = {
   },
   chat: (message: string, attachment_ids: string[]) =>
     request("/api/chat", responseChecks.chat, { message, attachment_ids }),
+  resetChat: () => request("/api/chat/reset", responseChecks.cartResult, {}),
+  removeAttachments: (attachment_ids: string[]) =>
+    request("/api/attachments/remove", responseChecks.removed, { attachment_ids }),
   propose: (product_id: string, quantity: number) =>
     request("/api/cart/propose", responseChecks.propose, {
       product_id,

@@ -133,6 +133,9 @@ export const responseChecks = {
   propose: objectOf<{ proposal: Proposal; cart: Cart }>({ proposal, cart }),
   confirm: objectOf<{ cart: Cart; text: string }>({ cart, text: string }),
   cartResult: objectOf<{ cart: Cart }>({ cart }),
+  removed: objectOf<{ removed: true }>({
+    removed: (value): value is true => value === true,
+  }),
   cart,
   product,
   alternatives: objectOf<{ products: Product[]; warnings: string[] }>({

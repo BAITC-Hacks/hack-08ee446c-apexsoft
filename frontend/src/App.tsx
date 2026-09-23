@@ -71,6 +71,8 @@ type Busy =
   | "cart"
   | "alternatives"
   | "cancel"
+  | "reset"
+  | "remove"
   | null;
 const operationLabels: Record<Exclude<Busy, null>, string> = {
   chat: "Проверяю каталог и готовлю ответ…",
@@ -80,6 +82,8 @@ const operationLabels: Record<Exclude<Busy, null>, string> = {
   cart: "Обновляю корзину…",
   alternatives: "Подбираю доступные аналоги…",
   cancel: "Отменяю предложение…",
+  reset: "Начинаю новый запрос…",
+  remove: "Убираю вложение…",
 };
 
 export default function App() {
@@ -316,15 +320,22 @@ export default function App() {
     });
   }
   function beginNewQuery() {
-    if (busy) return;
-    if (proposal) {
-      cancelProposal(true);
-      return;
-    }
-    // A new input is not a new server session. Never hide cart or pretend context was reset.
-    start("");
-    setAttachments([]);
-    setProposal(null);
+    void run("reset", async () => {
+      const result = await api.resetChat();
+      setCart(result.cart);
+      setMessages([]);
+      setDraft("");
+      setAttachments([]);
+      setProposal(null);
+      setProposalStale(false);
+      composer.current?.focus({ preventScroll: true });
+    });
+  }
+  function removeAttachment(id: string) {
+    void run("remove", async () => {
+      await api.removeAttachments([id]);
+      setAttachments((current) => current.filter(file => file.attachment_id !== id));
+    });
   }
   const connectionLabel = connecting
     ? "Подключение…"
@@ -696,14 +707,7 @@ export default function App() {
                         className="remove-file"
                         disabled={!!busy}
                         aria-label={`Убрать файл ${file.name}`}
-                        onClick={() =>
-                          setAttachments((current) =>
-                            current.filter(
-                              (item) =>
-                                item.attachment_id !== file.attachment_id,
-                            ),
-                          )
-                        }
+                        onClick={() => removeAttachment(file.attachment_id)}
                       >
                         <X size={14} />
                       </button>
