@@ -38,7 +38,10 @@ def test_bad_optional_catalog_fields_do_not_hide_known_product_facts(client, fie
     product = response.json()
     assert product['id'] == '900002' and product['price'] == 1200 and product['stock'] == 12
     assert isinstance(product['warehouses'], list) and isinstance(product['specifications'], list)
-    assert product['product_url'].startswith('https://')
+    if field == 'url':
+        assert product['product_url'] is None
+    else:
+        assert product['product_url'].startswith('https://')
     assert product['image_url'] != 'https://[broken'
     assert all(certificate['url'] != 'https://[broken' for certificate in product['certificates'])
 
