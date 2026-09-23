@@ -68,3 +68,30 @@ def test_russian_and_unrecognized_catalogue_text_are_preserved():
     response = {'text': 'Неизвестное обозначение XYZ-10'}
     assert localize_response(response, 'ru') == response
     assert localize_text(response['text'], 'kk') == response['text']
+
+
+@pytest.mark.parametrize('message,intent,quantity,pid', [
+    ('Жеткізу және төлем шарттары', 'terms', None, None),
+    ('Сәлеметсіз бе', 'other', None, None),
+    ('Маған кабель керек', 'clarify', None, None),
+    ('Артикул жоқ', 'clarify', None, None),
+    ('Осы тауардан 2 дана қос', 'add', 2, '21'),
+    ('Оны себетке қосыңыз', 'add', None, '21'),
+    ('NEW-22 тауарын қос', 'add', None, None),
+    ('Осы тауардың баламасын тап', 'alternatives', None, None),
+])
+def test_kazakh_fallback_understands_common_intents_without_guessing_quantity(message, intent, quantity, pid):
+    from backend.ai import AI
+    from backend.state import Session
+    session = Session(last_products=[{'id': '21', 'article': 'ONLY-11'}])
+    result = AI.__new__(AI).fallback(message, session)
+    assert result['intent'] == intent
+    assert result['quantity'] == quantity and result['product_id'] == pid
+
+
+def test_kazakh_quantity_cannot_be_mistaken_for_product_identifier():
+    from backend.ai import AI
+    from backend.state import Session
+    session = Session(last_products=[{'id': '21', 'article': 'FIRST'}, {'id': '22', 'article': 'TARGET'}])
+    result = AI.__new__(AI).fallback('TARGET 21 дана қос', session)
+    assert result['quantity'] == 21 and result['product_id'] == '22'
