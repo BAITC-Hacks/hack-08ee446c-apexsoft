@@ -272,7 +272,8 @@ def create_app(catalog=None,ai=None):
             action=intent['intent']; pid=intent.get('product_id'); query=intent.get('query') or message
             if action=='terms': return respond(TERMS,sources=SOURCES,warnings=warnings)
             if action=='overview':
-                products=await catalog.search('')
+                overview=await catalog.overview()
+                products=overview['products']
                 s.last_products=products; s.last_search_query=''
                 if not catalog.complete: warnings.append('Поиск охватывает загруженную выборку, не весь каталог. Точное наличие проверяется по карточке.')
                 return respond('Вот примеры товаров из доступного каталога. Напишите, какой товар или задача вас интересует.',products,

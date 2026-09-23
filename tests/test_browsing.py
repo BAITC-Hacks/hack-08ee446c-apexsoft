@@ -38,8 +38,9 @@ def test_generic_followup_reuses_requested_category_and_reset_clears_it(client,m
     client.post('/api/chat',json={'message':'что у вас есть'})
     assert calls==['шуруповёрт','шуруповёрт']
     client.post('/api/chat/reset',json={})
-    client.post('/api/chat',json={'message':'что у вас есть'})
-    assert calls[-1]==''
+    result=client.post('/api/chat',json={'message':'что у вас есть'}).json()
+    assert result['products'] and result['text'].startswith('Вот примеры товаров')
+    assert calls==['шуруповёрт','шуруповёрт']
 
 
 def test_explicit_full_catalogue_leaves_previous_category(client):
