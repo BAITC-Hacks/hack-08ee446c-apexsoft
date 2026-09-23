@@ -50,4 +50,4 @@ Enter отправляет запрос, Shift+Enter переносит стро
 
 ## Сторонние компоненты
 
-React (MIT), Vite (MIT), TypeScript (Apache-2.0), Lucide (ISC); IBM Plex Sans и Manrope (SIL OFL, пакеты Fontsource). Vitest (MIT), Testing Library (MIT), jsdom (MIT), Prettier (MIT) используются при разработке. Точные версии — `package-lock.json`. Эти зависимости существовали до хакатона; код интерфейса создаётся в ходе хакатона при помощи Codex B. Значки и шрифты поставляются локально; запросов к Google Fonts нет.
+React (MIT), Vite (MIT), TypeScript (Apache-2.0), Lucide (ISC); IBM Plex Sans и Manrope (SIL OFL, пакеты Fontsource). Vitest (MIT), Testing Library (MIT), jsdom (MIT), Prettier (MIT) используются при разработке. Точные версии — `package-lock.json`. Значки и шрифты поставляются локально; запросов к Google Fonts нет.

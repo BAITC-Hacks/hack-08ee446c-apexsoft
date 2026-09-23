@@ -1,6 +1,6 @@
 # EKT Assistant API v1
 
-Согласованный стек: FastAPI + React/Vite/TypeScript. A: backend/**, tests/**, scripts/**, docs/**, корневые файлы; B: frontend/** и DESIGN.md. Ветки agent-a/ekt-backend и codex/ekt-frontend-b. Источник задачи — сообщение пользователя от 23.09.2026, docs/CASE.md.
+Стек приложения: FastAPI + React/Vite/TypeScript.
 
 ## Транспорт и сессия
 
