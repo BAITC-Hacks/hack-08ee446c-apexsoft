@@ -175,3 +175,11 @@ def test_chunked_json_body_limit_before_parsing(client):
         yield b'"}'
     r=client.post('/api/chat',content=chunks(),headers={'Content-Type':'application/json'})
     assert r.status_code==413
+
+def test_ai_article_is_not_treated_as_product_id(client):
+    async def article_as_id(*args):
+        return {'intent':'detail','reply':'','query':'DEMO-LAMP-10W-B','product_id':'DEMO-LAMP-10W-B','quantity':None},[]
+    client.app.state.ai.interpret=article_as_id
+    r=client.post('/api/chat',json={'message':'Найди артикул DEMO-LAMP-10W-B'})
+    assert r.status_code==200
+    assert r.json()['products'][0]['id']=='900002'

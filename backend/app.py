@@ -198,7 +198,7 @@ def create_app(catalog=None,ai=None):
             if pid:
                 # AI may select only visible session products or an ID literally present in the user text.
                 allowed={p['id'] for p in s.last_products}
-                if pid not in allowed and not re.search(r'(?<!\d)'+re.escape(pid)+r'(?!\d)',message): pid=None
+                if pid not in allowed: pid=None
             products=[await catalog.detail(pid,fresh=catalog.live)] if pid else await catalog.search(query)
             if action=='alternatives':
                 target=products[0] if len(products)==1 else next((p for p in products if p['id']==pid),None)
