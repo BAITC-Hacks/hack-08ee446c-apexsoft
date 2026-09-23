@@ -73,6 +73,7 @@ type Busy =
   | "cancel"
   | "reset"
   | "remove"
+  | "removeCart"
   | null;
 const operationLabels: Record<Exclude<Busy, null>, string> = {
   chat: "Проверяю каталог и готовлю ответ…",
@@ -84,6 +85,7 @@ const operationLabels: Record<Exclude<Busy, null>, string> = {
   cancel: "Отменяю предложение…",
   reset: "Начинаю новый запрос…",
   remove: "Убираю вложение…",
+  removeCart: "Удаляю товар из корзины…",
 };
 
 export default function App() {
@@ -106,6 +108,7 @@ export default function App() {
   const conversationEnd = useRef<HTMLDivElement>(null);
   const followSubmittedChat = useRef(false);
   const requestLock = useRef(false);
+  const chatAttempt = useRef<{ payload: string; id: string } | null>(null);
   const isCartPage = window.location.pathname === "/cart";
   const expired =
     !!proposal &&
@@ -163,6 +166,7 @@ export default function App() {
       setConnected(false);
       setProposal(null);
       setAttachments([]);
+      chatAttempt.current = null;
     }
   }
   async function run(kind: Exclude<Busy, null>, task: () => Promise<void>) {
@@ -211,11 +215,16 @@ export default function App() {
     if ((!draft.trim() && !attachments.length) || disabled) return;
     const text = draft.trim();
     const selected = [...attachments];
+    const payload = JSON.stringify([text, selected.map(file => file.attachment_id)]);
+    if (chatAttempt.current?.payload !== payload)
+      chatAttempt.current = { payload, id: crypto.randomUUID() };
+    const requestId = chatAttempt.current.id;
     if (proposal) setProposalStale(true);
     void run("chat", async () => {
       const response = await api.chat(
         text || "Проверьте товары из приложенного файла.",
         selected.map((file) => file.attachment_id),
+        requestId,
       );
       applyChat(
         response,
@@ -224,6 +233,7 @@ export default function App() {
       );
       setDraft("");
       setAttachments([]);
+      chatAttempt.current = null;
     });
   }
   function propose(product: Product, quantity: number) {
@@ -278,6 +288,16 @@ export default function App() {
       setCart(await api.cart());
     });
   }
+  function removeCartItem(product: Product) {
+    if (!cart) return;
+    const version = cart.version;
+    void run("removeCart", async () => {
+      const result = await api.removeCartItem(product.id, version);
+      setCart(result.cart);
+      setProposal(null);
+      setNotice(`«${product.name}» удалён из корзины.`);
+    });
+  }
   function upload(file: File | undefined) {
     if (!file) return;
     if (file.size > 8 * 1024 * 1024) {
@@ -324,6 +344,7 @@ export default function App() {
       const result = await api.resetChat();
       setCart(result.cart);
       setMessages([]);
+      chatAttempt.current = null;
       setDraft("");
       setAttachments([]);
       setProposal(null);
@@ -525,6 +546,7 @@ export default function App() {
               cart={cart}
               loading={disabled}
               onRefresh={refreshCart}
+              onRemove={removeCartItem}
               full
             />
           </main>
@@ -808,6 +830,7 @@ export default function App() {
                 cart={cart}
                 loading={disabled}
                 onRefresh={refreshCart}
+                onRemove={removeCartItem}
               />
               <div className="cart-guide">
                 <span className="eyebrow">КАК ЭТО РАБОТАЕТ</span>
@@ -867,7 +890,7 @@ export default function App() {
             )}
           </div>
         )}
-        <CartContent cart={cart} loading={disabled} onRefresh={refreshCart} />
+        <CartContent cart={cart} loading={disabled} onRefresh={refreshCart} onRemove={removeCartItem} />
       </dialog>
     </div>
   );

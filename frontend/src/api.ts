@@ -101,8 +101,8 @@ export const api = {
         });
     return sessionRequest;
   },
-  chat: (message: string, attachment_ids: string[]) =>
-    request("/api/chat", responseChecks.chat, { message, attachment_ids }),
+  chat: (message: string, attachment_ids: string[], request_id?: string) =>
+    request("/api/chat", responseChecks.chat, { message, attachment_ids, request_id }),
   resetChat: () => request("/api/chat/reset", responseChecks.cartResult, {}),
   removeAttachments: (attachment_ids: string[]) =>
     request("/api/attachments/remove", responseChecks.removed, { attachment_ids }),
@@ -119,6 +119,8 @@ export const api = {
   cancel: (confirmation_id: string) =>
     request("/api/cart/cancel", responseChecks.cartResult, { confirmation_id }),
   cart: () => request("/api/cart", responseChecks.cart),
+  removeCartItem: (product_id: string, version: number) =>
+    request("/api/cart/remove", responseChecks.cartResult, { product_id, version, confirmed: true }),
   product: (id: string) =>
     request(`/api/products/${encodeURIComponent(id)}`, responseChecks.product),
   alternatives: (id: string) =>
