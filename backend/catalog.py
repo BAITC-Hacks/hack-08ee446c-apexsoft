@@ -11,6 +11,8 @@ from urllib.parse import urlsplit, unquote
 
 import httpx
 from .errors import AppError
+from .visual import photo_candidate, photo_score
+from .analogue_matching import analogue_reason
 
 DATA = Path(__file__).parent / 'data' / 'catalog_snapshot.json'
 LABELS = {'TORGOVAYA_MARKA':'Бренд','NOMINALNYY_TOK':'Номинальный ток (поле каталога)',
@@ -199,7 +201,7 @@ class Catalog:
         return {'products':products[:limit], 'categories':categories[:24],
                 'indexed_products':len(self.rows), 'index_complete':self.complete}
 
-    async def search(self,query,limit=6,max_price=None):
+    async def search(self,query,limit=6,max_price=None,visual=None):
         if max_price is not None:
             max_price=number(max_price)
             if max_price is None: raise AppError('invalid_request','Укажите корректный бюджет.')
@@ -213,6 +215,7 @@ class Catalog:
         required_types=[pattern for pattern in tool_types if re.search(pattern,' '.join(ts))]
         identifiers=[t for t in ts if len(t)>=4 and any(char.isdigit() for char in t)]
         for pid,row in self.rows.items():
+            if visual and not photo_candidate(row,visual): continue
             article=str(row.get('article','')).lower(); name=str(row.get('name','')).lower()
             words=tokens(name+' '+article); hay=' '.join(words)
             article_key=article.rstrip('_')
@@ -224,7 +227,8 @@ class Catalog:
             # Short model prefixes such as GL must not match unrelated names such as GLOSSA.
             score=sum(3 if t in article else 1 for t in ts if
                       (bool(re.search(code_pattern(t),hay)) if t in identifiers else (t in words if len(t)<4 else t in hay)))
-            if score or not query: scores.append((score,pid))
+            if visual: score+=photo_score(row,visual)
+            if score or not query or visual: scores.append((score,pid))
         scores.sort(key=lambda x:-x[0])
         pids=exact or [pid for _,pid in scores]
         if numeric and (marked_id or not exact):
@@ -271,15 +275,14 @@ class Catalog:
                 candidates.append((len(shared),rid))
         candidates.sort(reverse=True)
         result=[]
-        critical=('Полюсов','Номинальный ток (поле каталога)','Напряжение','Мощность','Сечение')
-        left={s['name']:s['value'].lower().replace(' ','') for s in target['specifications']}
         for _,rid in candidates[:16]:
-            item=await self.detail(rid,fresh=self.live)
-            if not item['stock'] or any('Расхождение' in w for w in item['warnings']): continue
-            right={s['name']:s['value'].lower().replace(' ','') for s in item['specifications']}
-            if any(k in left and k in right and left[k]!=right[k] for k in critical): continue
-            shared=[k for k in critical if k in left and right.get(k)==left[k]]
-            item['analogue_reason']='Та же категория каталога' + (', совпадают: '+', '.join(shared) if shared else ', близкое наименование') + '. Кандидат на замену: перед монтажом уточните совместимость у специалиста.'
+            try: item=await self.detail(rid,fresh=self.live)
+            except AppError as error:
+                if error.code=='not_found': continue
+                raise
+            reason=analogue_reason(target,item)
+            if not reason: continue
+            item['analogue_reason']=reason
             result.append(item)
             if len(result)==3: break
         warnings=[] if result else ['В доступной выборке не найден подтверждённый подходящий аналог с остатком. Обратитесь к менеджеру; неподходящую замену не предлагаем.']

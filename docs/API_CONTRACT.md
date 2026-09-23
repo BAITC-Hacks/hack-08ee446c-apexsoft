@@ -8,7 +8,7 @@
 
 ## Типы (JSON)
 
-Product: {id: string, article: string, name: string, description: string, category: string, price: number|null, currency: 'KZT', stock: number|null, min_quantity: number, quantity_step: number, image_url: string|null, product_url: string, specifications: [{name: string,value: string}], certificates: [{name: string,url: string}], warehouses: [{name: string,stock: number|null}], warnings: string[], source: 'live'|'snapshot', checked_at: string, analogue_reason: string|null}.
+Product: {id: string, article: string, name: string, description: string, category: string, price: number|null, currency: 'KZT', stock: number|null, min_quantity: number, quantity_step: number, image_url: string|null, product_url: string|null, specifications: [{name: string,value: string}], certificates: [{name: string,url: string}], warehouses: [{name: string,stock: number|null}], warnings: string[], source: 'live'|'snapshot', checked_at: string, analogue_reason: string|null}.
 
 Cart: {mode:'demo', items:[{product:Product,quantity:number,line_total:number}], total:number, currency:'KZT', count:number, version:number, url:'/cart', notice:string}.
 

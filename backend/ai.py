@@ -1,11 +1,13 @@
 """AI reads intent; it cannot authorize a cart mutation or invent product facts."""
 import json
+import copy
 import math
 import os
 import re
 import httpx
 from .clarification import TOPICS, QUESTIONS, ACKNOWLEDGEMENTS, respect_unavailable_parameters
 from .browsing import is_overview, prefer_named_tool_search
+from .visual import VISUAL_SCHEMA, PHOTO_INSTRUCTIONS, valid_visual, image_inputs, normalize_visual
 
 SCHEMA={'type':'object','additionalProperties':False,'properties':{
 'intent':{'type':'string','enum':['search','detail','alternatives','add','terms','clarify','overview','other']},
@@ -90,6 +92,11 @@ class AI:
         self.client=httpx.AsyncClient(timeout=18,follow_redirects=False)
 
     async def interpret(self,message,session,attachments):
+        has_photos=any(a['kind']=='image' for a in attachments)
+        schema=copy.deepcopy(SCHEMA)
+        if has_photos:
+            schema['properties']['visual']=VISUAL_SCHEMA
+            schema['required'].append('visual')
         fallback=prefer_named_tool_search(respect_unavailable_parameters(self.fallback(message,session),message,session.history),message)
         if not self.key:
             return fallback,['OpenAI не настроен: работает ограниченный поиск по тексту/артикулу.']
@@ -98,17 +105,22 @@ class AI:
             'documents':[a['extracted_text'] for a in attachments if a['kind']=='document'],
             'message':message},ensure_ascii=False)}]
         history=[{'role':entry['role'],'content':entry['text']} for entry in session.history[-12:]]
-        for a in attachments:
-            if a.get('image'): content.append({'type':'input_image','image_url':a['image'],'detail':'auto'})
+        for image in image_inputs(attachments):
+            content.append({'type':'input_image','image_url':image,'detail':'high'})
         try:
             response=await self.client.post('https://api.openai.com/v1/responses',headers={'Authorization':'Bearer '+self.key},json={
-                'model':self.model,'store':False,'max_output_tokens':500,
-                'input':[{'role':'system','content':SYSTEM},*history,{'role':'user','content':content}],
-                'text':{'format':{'type':'json_schema','name':'ekt_intent','strict':True,'schema':SCHEMA}}})
+                'model':self.model,'store':False,'max_output_tokens':700 if has_photos else 500,
+                'input':[{'role':'system','content':SYSTEM+(PHOTO_INSTRUCTIONS if has_photos else '')},*history,{'role':'user','content':content}],
+                'text':{'format':{'type':'json_schema','name':'ekt_intent','strict':True,'schema':schema}}})
             response.raise_for_status(); body=response.json()
             text=''.join(c.get('text','') for out in body.get('output',[]) for c in out.get('content',[]) if c.get('type')=='output_text')
             result=json.loads(text)
+            visual=result.pop('visual',None) if isinstance(result,dict) else None
             if not valid_intent(result): raise ValueError('Invalid intent response')
+            if has_photos:
+                if not valid_visual(visual): raise ValueError('Invalid photo observations')
+                result['visual']=normalize_visual(visual)
+                return result,[]
             return prefer_named_tool_search(respect_unavailable_parameters(result,message,session.history),message),[]
         except (httpx.HTTPError,ValueError,KeyError,TypeError,AttributeError):
             return fallback,['OpenAI не ответил. Использован ограниченный поиск; содержимое фото не распознано.']

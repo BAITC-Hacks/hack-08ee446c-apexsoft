@@ -25,6 +25,9 @@ from .knowledge import SOURCES, TERMS
 from .state import Session, propose, confirm
 from .language import detect_language, localize_response, localize_text, normalize_command
 from .browsing import is_overview, budget_from_message, without_budget, search_followup, named_tool_query
+from .visual import image_inputs, valid_visual, photo_query, photo_reply
+from .privacy import reject_payment_data
+from .document_search import document_matches
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -199,9 +202,12 @@ def create_app(catalog=None,ai=None):
             finally:
                 for f in opened: f.close()
             if len(files)!=1: raise AppError('invalid_attachment','Загрузите один файл за раз.',422)
-            attachment=await asyncio.to_thread(parse_file,*files[0]); aid=secrets.token_urlsafe(16)
+            attachment=await asyncio.to_thread(parse_file,*files[0])
+            reject_payment_data(attachment['name'])
+            reject_payment_data(attachment['extracted_text'])
+            aid=secrets.token_urlsafe(16)
             s.attachments[aid]=attachment
-            return {'attachment_id':aid,**{k:v for k,v in attachment.items() if k!='image'}}
+            return {'attachment_id':aid,**{k:v for k,v in attachment.items() if k not in {'image','images'}}}
 
     @app.post('/api/attachments/remove')
     async def remove_attachments(body:RemoveAttachmentsIn,request:Request):
@@ -217,6 +223,7 @@ def create_app(catalog=None,ai=None):
         async with s.lock:
             s.history.clear(); s.last_products.clear(); s.attachments.clear(); s.pending=None
             s.last_search_query=''
+            s.last_visual=None
             s.search_max_price=None
             s.chat_receipts.clear()
             return localize_response({'cart':s.cart()},s.language)
@@ -227,6 +234,7 @@ def create_app(catalog=None,ai=None):
         async with s.lock:
             message=body.message.strip()
             if not message: raise AppError('invalid_request','Напишите вопрос о товаре.')
+            reject_payment_data(message)
             fingerprint=hashlib.sha256(json.dumps([message,body.attachment_ids],ensure_ascii=False).encode()).hexdigest()
             cached=s.chat_receipts.get(body.request_id)
             if cached:
@@ -262,14 +270,40 @@ def create_app(catalog=None,ai=None):
             if re.fullmatch(r'(?:показать |покажи |открыть |открой )?корзин[ау][.!\s]*',command,re.I):
                 return respond('Откройте демонстрационную корзину по ссылке /cart. '+s.cart()['notice'])
             attachments=[s.attachments[aid] for aid in body.attachment_ids]
-            if is_overview(message) and not attachments:
+            document_ids=document_matches(catalog.rows,attachments)
+            if len(document_ids)>1:
+                products=await asyncio.gather(*(catalog.detail(pid,fresh=catalog.live) for pid in document_ids[:6]))
+                s.last_products=products
+                return respond('В документе найдены несколько артикулов. Выберите карточку товара для продолжения; корзина не менялась.',products,
+                    warnings=['Показаны первые 6 совпадений из документа.'] if len(document_ids)>6 else [])
+            if document_ids:
+                intent={'intent':'search','query':'ID: '+document_ids[0],'product_id':None,'quantity':None}
+                warnings=[]
+            elif is_overview(message) and not attachments:
                 query='' if re.search(r'весь|вообще',message,re.I) else s.last_search_query
                 intent={'intent':'search' if query else 'overview','query':query,'product_id':None,'quantity':None}
                 warnings=[]
             else:
                 intent,warnings=await ai.interpret(message,s,attachments)
-            if any(a['kind']=='image' for a in attachments) and (not ai.key or warnings):
+            if image_inputs(attachments) and (not ai.key or warnings):
                 return respond('Фото не удалось распознать. Напишите маркировку или артикул текстом.',warnings=warnings)
+            if any(a['kind']=='image' for a in attachments):
+                visual=intent.get('visual')
+                if not valid_visual(visual):
+                    return respond('Фото не удалось распознать. Напишите маркировку или артикул текстом.',warnings=warnings)
+                products=[]
+                s.last_visual=None; s.last_search_query=''
+                if visual['status']=='product' and visual['product_type']!='other':
+                    query=photo_query(visual)
+                    products=await catalog.search(query,visual=visual)
+                    s.last_search_query=query; s.search_max_price=None
+                    s.last_visual=visual
+                s.last_products=products
+                # The picture can suggest candidates, never authorize/select a cart line.
+                warnings+=list(dict.fromkeys(w for p in products for w in p['warnings']))
+                if not catalog.complete: warnings.append('Поиск охватывает загруженную выборку, не весь каталог. Точное наличие проверяется по карточке.')
+                return respond(photo_reply(visual,bool(products),s.language),products,
+                    sources=[{'title':p['name'],'url':p['product_url']} for p in products if p.get('product_url')],warnings=warnings)
             action=intent['intent']; pid=intent.get('product_id'); query=intent.get('query') or message
             budget=budget_from_message(message)
             if budget is not None and action in {'search','detail','clarify','other'}:
@@ -300,6 +334,10 @@ def create_app(catalog=None,ai=None):
             if action in {'search','detail','alternatives'}:
                 s.last_search_query=query
             search_options={'max_price':s.search_max_price} if action=='search' and s.search_max_price is not None else {}
+            if action=='search' and s.last_visual and search_followup(message):
+                search_options['visual']=s.last_visual
+            elif action in {'search','detail'}:
+                s.last_visual=None
             products=[await catalog.detail(pid,fresh=catalog.live)] if pid else await catalog.search(query,**search_options)
             if action=='alternatives':
                 target=products[0] if len(products)==1 else next((p for p in products if p['id']==pid),None)
