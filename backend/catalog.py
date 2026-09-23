@@ -125,18 +125,34 @@ class Catalog:
 
     async def index(self):
         if not self.live: return
+        self.complete=False; self.index_error=None
         try:
-            max_pages=max(1,min(1000,int(os.getenv('EKT_INDEX_PAGES','100'))))
+            max_pages=max(1,min(1000,int(os.getenv('EKT_INDEX_PAGES','1000'))))
+            # per_page is supported by EKT; q/search/page_size/limit are ignored.
+            # A high page number can wrap to page one instead of returning empty.
+            page_size=100
+            seen_ids=set()
             # Leave capacity for customer requests while the background index loads.
             for start in range(1,max_pages+1,2):
-                pages=await asyncio.gather(*(self.request('/api/products',{'page':p}) for p in range(start,min(start+2,max_pages+1))))
+                pages=await asyncio.gather(*(self.request('/api/products',{'page':p,'per_page':page_size}) for p in range(start,min(start+2,max_pages+1))))
                 for page in pages:
                     items=page.get('items')
                     if not isinstance(items,list): raise ValueError('invalid items')
-                    self.rows.update({str(r['id']):r for r in items if isinstance(r,dict) and 'id' in r})
-                    if len(items)<int(page.get('per_page',20)):
+                    actual_size=int(page.get('per_page',page_size))
+                    if actual_size<1: raise ValueError('invalid page size')
+                    if any(not isinstance(r,dict) or not re.fullmatch(r'\d{1,12}',str(r.get('id',''))) for r in items):
+                        raise ValueError('invalid product in index')
+                    ids={str(r['id']) for r in items}
+                    if ids and not (ids-seen_ids):
+                        # Repetition is not proof of completeness: the API might
+                        # have ignored pagination or changed while we loaded it.
+                        raise ValueError('repeating page')
+                    seen_ids.update(ids)
+                    self.rows.update({str(r['id']):r for r in items})
+                    if len(items)<actual_size:
                         self.complete=True; return
                 await asyncio.sleep(.08)
+            self.index_error='Достигнут предел загрузки каталога. Поиск пока охватывает только загруженные товары.'
         except (AppError,ValueError,TypeError):
             self.index_error='Индекс каталога загружен частично. Поиск по ID доступен отдельно.'
 

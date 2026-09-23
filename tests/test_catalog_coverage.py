@@ -83,3 +83,63 @@ def test_real_photo_description_and_deep_link_are_preserved():
     assert product['product_url']=='https://ekt.kz/catalog/tools/drill/'
     assert product['image_url']=='https://ekt.kz/upload/drill.jpg'
     assert product['description']=='Описание дрели'
+
+
+def test_index_reaches_products_beyond_original_2000_and_reports_completion(monkeypatch):
+    monkeypatch.delenv('EKT_INDEX_PAGES',raising=False)
+    calls=[]
+    async def upstream(request):
+        if request.url.path=='/api/products/detail':
+            return httpx.Response(200,json=row(2001,'Дрель-шуруповерт TEST',price=12500,quantity=3))
+        page=int(request.url.params['page']); size=int(request.url.params['per_page'])
+        calls.append((page,size))
+        assert size==100
+        begin=(page-1)*size+1
+        items=[row(i,'Дрель-шуруповерт TEST' if i==2001 else 'Кабель') for i in range(begin,min(begin+size,2002))]
+        return httpx.Response(200,json={'items':items,'page':page,'per_page':size,'count':len(items)})
+    async def scenario(catalog):
+        await catalog.index()
+        assert catalog.complete and not catalog.index_error
+        assert len(catalog.rows)==2001
+        products=await catalog.search('шуруповёрт')
+        assert [p['id'] for p in products]==['2001'] and products[0]['stock']==3
+        assert max(p for p,_ in calls)<=22
+    run_catalog(monkeypatch,scenario,upstream)
+
+
+def test_wrapping_page_stops_without_claiming_complete_catalog(monkeypatch):
+    calls=[]
+    async def upstream(request):
+        page=int(request.url.params['page']);calls.append(page)
+        # EKT reports the requested page even when its contents wrap to page one.
+        ids=[1,2] if page in (1,3) else [3,4]
+        return httpx.Response(200,json={'items':[row(i) for i in ids],'page':page,'per_page':2})
+    async def scenario(catalog):
+        await catalog.index()
+        assert len(catalog.rows)==4 and not catalog.complete
+        assert catalog.index_error and max(calls)==4
+    run_catalog(monkeypatch,scenario,upstream)
+
+
+def test_explicit_page_limit_is_respected_and_not_mislabeled_complete(monkeypatch):
+    monkeypatch.setenv('EKT_INDEX_PAGES','2')
+    calls=[]
+    async def upstream(request):
+        page=int(request.url.params['page']);calls.append(page)
+        return httpx.Response(200,json={'items':[row(page)],'per_page':1})
+    async def scenario(catalog):
+        await catalog.index()
+        assert calls==[1,2] and len(catalog.rows)==2
+        assert not catalog.complete and catalog.index_error
+    run_catalog(monkeypatch,scenario,upstream)
+
+
+def test_index_failure_preserves_loaded_products_without_false_completion(monkeypatch):
+    async def upstream(request):
+        page=int(request.url.params['page'])
+        if page>2:return httpx.Response(503)
+        return httpx.Response(200,json={'items':[row(page)],'per_page':1})
+    async def scenario(catalog):
+        await catalog.index()
+        assert set(catalog.rows)=={'1','2'} and not catalog.complete and catalog.index_error
+    run_catalog(monkeypatch,scenario,upstream)
