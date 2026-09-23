@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, StrictBool
 from .ai import AI
+from .clarification import render_clarification
 from .body_limit import BodyLimit
 from .attachments import MAX_BYTES, parse_file
 from .catalog import Catalog
@@ -178,23 +179,28 @@ def create_app(catalog=None,ai=None):
             if not message: raise AppError('invalid_request','Напишите вопрос о товаре.')
             for aid in body.attachment_ids:
                 if aid not in s.attachments: raise AppError('not_found','Вложение не найдено в этой сессии.',404)
+            def respond(text='',products=None,proposal=None,sources=None,warnings=None):
+                # Record completed exchanges, including deterministic cart replies, exactly as displayed.
+                s.history.extend([{'role':'user','text':message},{'role':'assistant','text':text}])
+                s.history=s.history[-12:]
+                return chat_result(s,text,products,proposal,sources,warnings)
             affirmative=re.fullmatch(r'(?:да[,!\s]+)?добавь(?:те)?[.!\s]*',message,re.I)
             if affirmative and s.pending and not body.attachment_ids:
                 result=await confirm(s,catalog,s.pending['proposal']['confirmation_id'],True)
-                return chat_result(s,result['text'])
+                return respond(result['text'])
             s.pending=None  # A new request supersedes any previous quote, including refusal.
             if re.fullmatch(r'(?:нет|отмена|не добавляй|не добавлять)[.!\s]*',message,re.I):
-                return chat_result(s,'Добавление отменено. Корзина не изменилась.')
+                return respond('Добавление отменено. Корзина не изменилась.')
             if re.fullmatch(r'(?:показать |покажи |открыть |открой )?корзин[ау][.!\s]*',message,re.I):
-                return chat_result(s,'Откройте демонстрационную корзину по ссылке /cart. '+s.cart()['notice'])
+                return respond('Откройте демонстрационную корзину по ссылке /cart. '+s.cart()['notice'])
             attachments=[s.attachments[aid] for aid in body.attachment_ids]
             intent,warnings=await ai.interpret(message,s,attachments)
             if any(a['kind']=='image' for a in attachments) and (not ai.key or warnings):
-                return chat_result(s,'Фото не удалось распознать. Напишите маркировку или артикул текстом.',warnings=warnings)
-            s.history.append({'role':'user','text':message}); s.history=s.history[-10:]
+                return respond('Фото не удалось распознать. Напишите маркировку или артикул текстом.',warnings=warnings)
             action=intent['intent']; pid=intent.get('product_id'); query=intent.get('query') or message
-            if action=='terms': return chat_result(s,TERMS,sources=SOURCES,warnings=warnings)
-            if action=='other': return chat_result(s,'Здравствуйте! Помогу с товарами и условиями покупки. Напишите название, артикул или прикрепите маркировку. Цены и наличие проверю по каталогу.',warnings=warnings)
+            if action=='terms': return respond(TERMS,sources=SOURCES,warnings=warnings)
+            if action=='clarify': return respond(render_clarification(intent.get('clarification')),warnings=warnings)
+            if action=='other': return respond('Здравствуйте! Помогу с товарами и условиями покупки. Опишите задачу, название или артикул товара. Цены и наличие проверю по каталогу.',warnings=warnings)
             if pid:
                 # AI may select only visible session products or an ID literally present in the user text.
                 allowed={p['id'] for p in s.last_products}
@@ -202,22 +208,22 @@ def create_app(catalog=None,ai=None):
             products=[await catalog.detail(pid,fresh=catalog.live)] if pid else await catalog.search(query)
             if action=='alternatives':
                 target=products[0] if len(products)==1 else next((p for p in products if p['id']==pid),None)
-                if target is None: return chat_result(s,'Уточните артикул исходного товара для подбора аналога.',products,warnings=warnings)
+                if target is None: return respond('Уточните исходный товар для подбора аналога: укажите название, маркировку или выберите карточку.',products,warnings=warnings)
                 products,extra=await catalog.alternatives(target['id']); warnings+=extra
                 text='Кандидаты на замену: сравните характеристики и подтвердите совместимость у специалиста.' if products else 'Подходящий аналог пока не подтверждён.'
             elif action=='add':
                 if len(products)!=1:
                     s.last_products=products
-                    return chat_result(s,'Уточните, какой товар добавить: выберите карточку. Корзина пока не менялась.',products,warnings=warnings)
+                    return respond('Уточните, какой товар добавить: выберите карточку. Корзина пока не менялась.',products,warnings=warnings)
                 qty=intent.get('quantity')
                 if qty is None:
                     s.last_products=products
-                    return chat_result(s,'Сколько единиц добавить? Укажите количество или выберите его в карточке.',products,warnings=warnings)
+                    return respond('Сколько единиц добавить? Укажите количество или выберите его в карточке.',products,warnings=warnings)
                 proposal=await propose(s,catalog,products[0]['id'],qty); s.last_products=products
-                return chat_result(s,f"Подтвердите добавление {qty:g}: {products[0]['name']}. До подтверждения корзина не меняется.",products,proposal,warnings=warnings)
+                return respond(f"Подтвердите добавление {qty:g}: {products[0]['name']}. До подтверждения корзина не меняется.",products,proposal,warnings=warnings)
             else:
                 if not products:
-                    return chat_result(s,'В доступной выборке товар не найден. Уточните артикул или ID; отсутствие в поиске не означает отсутствие в магазине.',warnings=warnings)
+                    return respond('В доступной выборке товар не найден. Попробуйте название, маркировку или другое описание; отсутствие в поиске не означает отсутствие в магазине.',warnings=warnings)
                 text='Нашёл товары по каталогу. В карточках — цена, наличие, характеристики и доступные документы.'
                 if len(products)==1:
                     p=products[0]
@@ -231,7 +237,7 @@ def create_app(catalog=None,ai=None):
             s.last_products=products
             warnings+=list(dict.fromkeys(w for p in products for w in p['warnings']))
             if not catalog.complete: warnings.append('Поиск охватывает загруженную выборку, не весь каталог. Точное наличие проверяется по карточке.')
-            return chat_result(s,text,products,sources=[{'title':p['name'],'url':p['product_url']} for p in products],warnings=warnings)
+            return respond(text,products,sources=[{'title':p['name'],'url':p['product_url']} for p in products],warnings=warnings)
 
     dist=ROOT/'frontend'/'dist'
     if (dist/'assets').exists(): app.mount('/assets',StaticFiles(directory=dist/'assets'),name='assets')
