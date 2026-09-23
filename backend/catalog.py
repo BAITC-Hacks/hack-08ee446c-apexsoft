@@ -46,8 +46,11 @@ def normalize(raw, source='live', checked_at=None):
     props = raw.get('properties')
     if not isinstance(props, dict): props = {}
     name = clean(raw.get('name'))
-    url = safe_url(raw.get('url')) or 'https://ekt.kz/'
-    category = unquote(urlsplit(url).path.strip('/').split('/')[-2]) if '/' in urlsplit(url).path.strip('/') else ''
+    url = safe_url(raw.get('url'))
+    path = urlsplit(url).path.strip('/') if url else ''
+    # A home/catalog page is not a link to this product. Keep missing links absent.
+    if path in ('', 'catalog'): url = None
+    category = unquote(path.split('/')[-2]) if '/' in path else ''
     specs = [{'name': LABELS[k], 'value': clean(v)} for k,v in props.items() if k in LABELS and isinstance(v,(str,int,float)) and str(v).strip()]
     certificates = []
     for key,value in props.items():
@@ -122,18 +125,34 @@ class Catalog:
 
     async def index(self):
         if not self.live: return
+        self.complete=False; self.index_error=None
         try:
-            max_pages=max(1,min(1000,int(os.getenv('EKT_INDEX_PAGES','100'))))
+            max_pages=max(1,min(1000,int(os.getenv('EKT_INDEX_PAGES','1000'))))
+            # per_page is supported by EKT; q/search/page_size/limit are ignored.
+            # A high page number can wrap to page one instead of returning empty.
+            page_size=100
+            seen_ids=set()
             # Leave capacity for customer requests while the background index loads.
             for start in range(1,max_pages+1,2):
-                pages=await asyncio.gather(*(self.request('/api/products',{'page':p}) for p in range(start,min(start+2,max_pages+1))))
+                pages=await asyncio.gather(*(self.request('/api/products',{'page':p,'per_page':page_size}) for p in range(start,min(start+2,max_pages+1))))
                 for page in pages:
                     items=page.get('items')
                     if not isinstance(items,list): raise ValueError('invalid items')
-                    self.rows.update({str(r['id']):r for r in items if isinstance(r,dict) and 'id' in r})
-                    if len(items)<int(page.get('per_page',20)):
+                    actual_size=int(page.get('per_page',page_size))
+                    if actual_size<1: raise ValueError('invalid page size')
+                    if any(not isinstance(r,dict) or not re.fullmatch(r'\d{1,12}',str(r.get('id',''))) for r in items):
+                        raise ValueError('invalid product in index')
+                    ids={str(r['id']) for r in items}
+                    if ids and not (ids-seen_ids):
+                        # Repetition is not proof of completeness: the API might
+                        # have ignored pagination or changed while we loaded it.
+                        raise ValueError('repeating page')
+                    seen_ids.update(ids)
+                    self.rows.update({str(r['id']):r for r in items})
+                    if len(items)<actual_size:
                         self.complete=True; return
                 await asyncio.sleep(.08)
+            self.index_error='Достигнут предел загрузки каталога. Поиск пока охватывает только загруженные товары.'
         except (AppError,ValueError,TypeError):
             self.index_error='Индекс каталога загружен частично. Поиск по ID доступен отдельно.'
 
@@ -149,12 +168,49 @@ class Catalog:
         source='live' if pid in self.checked else 'snapshot'
         return normalize(self.details[pid],source,self.checked.get(pid,self.snapshot_time))
 
-    async def search(self,query,limit=6):
+    async def overview(self,limit=6):
+        """Examples from loaded categories, with the same verified facts as search.
+
+        Category values are identifiers supplied by product URLs, not a claim
+        that we know every department or every product sold by the store.
+        """
+        limit=max(1,min(12,int(limit)))
+        rows=list(self.rows.items())
+        first=[]; remaining=[]; categories=[]; seen=set()
+        for pid,row in rows:
+            category=normalize(row)['category']
+            if category and category not in seen:
+                seen.add(category); categories.append(category); first.append(pid)
+            else:
+                remaining.append(pid)
+        candidates=(first+remaining)[:limit*3]
+        products=[]
+        # Limit parallel calls; a removed example must not hide another category.
+        for start in range(0,len(candidates),limit):
+            results=await asyncio.gather(*(self.detail(pid,fresh=self.live)
+                for pid in candidates[start:start+limit]),return_exceptions=True)
+            for result in results:
+                if isinstance(result,AppError) and result.code=='not_found': continue
+                if isinstance(result,BaseException): raise result
+                products.append(result)
+            if len(products)>=limit: break
+        if self.live and not rows:
+            raise AppError('upstream_unavailable','Каталог ещё загружается. Повторите запрос позже или укажите ID товара.',503)
+        return {'products':products[:limit], 'categories':categories[:24],
+                'indexed_products':len(self.rows), 'index_complete':self.complete}
+
+    async def search(self,query,limit=6,max_price=None):
+        if max_price is not None:
+            max_price=number(max_price)
+            if max_price is None: raise AppError('invalid_request','Укажите корректный бюджет.')
         query=query.strip(); ts=[t for t in tokens(query) if t not in {'есть','ли','найди','нужен','нужно','мне','купить','покажи','товар','наличие','сколько','стоит','пожалуйста','для','на','в','и','с','по'}]
         # Model numbers and ratings (GL 1004D, 4000 К) are not internal catalogue IDs.
         marked_id=re.search(r'(?<!\w)(?:id|ид|идентификатор)(?:\s+товара)?\s*[:#№]?\s*(\d{1,12})(?!\w)',query,re.I)
         numeric=marked_id or re.fullmatch(r'(\d{1,12})',query)
         scores=[]; exact=[]
+        # A use case ("for home") must not turn a named drill into a home siren.
+        tool_types=(r'\bшуруповерт\w*',r'\bдрел[ьи]\w*',r'\bперфоратор\w*',r'\bболгарк\w*')
+        required_types=[pattern for pattern in tool_types if re.search(pattern,' '.join(ts))]
         identifiers=[t for t in ts if len(t)>=4 and any(char.isdigit() for char in t)]
         for pid,row in self.rows.items():
             article=str(row.get('article','')).lower(); name=str(row.get('name','')).lower()
@@ -162,6 +218,7 @@ class Catalog:
             article_key=article.rstrip('_')
             if article_key and re.search(r'(?<![\w-])'+re.escape(article_key)+r'_?(?![\w-])',query.lower()):
                 exact.append(pid)
+            if required_types and not any(re.search(pattern,' '.join(tokens(name))) for pattern in required_types): continue
             # A model/rating explicitly named by the buyer must occur in a candidate.
             if any(not re.search(code_pattern(t),hay) for t in identifiers): continue
             # Short model prefixes such as GL must not match unrelated names such as GLOSSA.
@@ -169,10 +226,11 @@ class Catalog:
                       (bool(re.search(code_pattern(t),hay)) if t in identifiers else (t in words if len(t)<4 else t in hay)))
             if score or not query: scores.append((score,pid))
         scores.sort(key=lambda x:-x[0])
-        pids=exact[:limit] or [pid for _,pid in scores[:limit]]
+        pids=exact or [pid for _,pid in scores]
         if numeric and (marked_id or not exact):
             try:
-                return [await self.detail(numeric[1],fresh=True)]
+                item=await self.detail(numeric[1],fresh=True)
+                return [item] if max_price is None or item['price'] is not None and item['price']<=max_price else []
             except AppError as e:
                 if e.code=='not_found': return []
                 raise
@@ -180,12 +238,25 @@ class Catalog:
             message=('Каталог ekt.kz сейчас недоступен. Цена и наличие не подтверждены; повторите запрос позже.'
                      if self.index_error else 'Каталог ещё загружается. Поиск по названию и артикулу пока недоступен; повторите позже или укажите ID товара.')
             raise AppError('upstream_unavailable',message,503)
+        if max_price is not None:
+            # Index prices only select candidates; fresh detail is authoritative.
+            # This can reach an affordable match beyond the first six names.
+            def price_bucket(pid):
+                price=number(self.rows[pid].get('price'))
+                return 1 if price is None else (0 if price<=max_price else 2)
+            pids.sort(key=price_bucket)
+        pids=pids[:limit if max_price is None else max(limit*4,24)]
         out=[]
-        for pid in pids:
-            try: out.append(await self.detail(pid))
-            except AppError as e:
-                if e.code=='upstream_unavailable': raise
-        return out
+        for start in range(0,len(pids),limit):
+            results=await asyncio.gather(*(self.detail(pid,fresh=self.live and max_price is not None)
+                for pid in pids[start:start+limit]),return_exceptions=True)
+            for item in results:
+                if isinstance(item,AppError) and item.code=='not_found': continue
+                if isinstance(item,BaseException): raise item
+                if max_price is None or item['price'] is not None and item['price']<=max_price:
+                    out.append(item)
+            if len(out)>=limit: break
+        return out[:limit]
 
     async def alternatives(self,pid):
         target=await self.detail(pid,fresh=self.live)

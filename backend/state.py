@@ -22,6 +22,8 @@ class Session:
     attachments: dict=field(default_factory=dict)
     history: list=field(default_factory=list)
     last_products: list=field(default_factory=list)
+    last_search_query: str=''
+    search_max_price: float|None=None
     language: str='ru'
     calls: list=field(default_factory=list)
     lock: asyncio.Lock=field(default_factory=asyncio.Lock)

@@ -284,6 +284,18 @@ describe("recoverable response errors", () => {
 });
 
 describe("explicit cart consent and honest data", () => {
+  it("focuses an offscreen confirmation region without confirming on Enter", async () => {
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      top: 1500, bottom: 1800, left: 0, right: 400, width: 400, height: 300, x: 0, y: 1500,
+      toJSON: () => ({}),
+    });
+    const user = await propose();
+    const region = screen.getByRole("region", {name:"Подтверждение выбранного товара"});
+    expect(region).toHaveFocus();
+    expect(scrollIntoView).toHaveBeenCalledWith({block:"center",behavior:"smooth"});
+    await user.keyboard("{Enter}");
+    expect(calls.filter(call => call.path === "/api/cart/confirm")).toHaveLength(0);
+  });
   it("renders API and file HTML as text and omits executable source and certificate links", async () => {
     const payloads = {
       text: '<script>alert("reply")</script>',
