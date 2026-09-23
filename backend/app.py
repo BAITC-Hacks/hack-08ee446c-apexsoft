@@ -1,0 +1,248 @@
+import asyncio
+import io
+import os
+import re
+import secrets
+import time
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field, StrictBool
+from .ai import AI
+from .body_limit import BodyLimit
+from .attachments import MAX_BYTES, parse_file
+from .catalog import Catalog
+from .errors import AppError
+from .knowledge import SOURCES, TERMS
+from .state import Session, propose, confirm
+
+ROOT=Path(__file__).resolve().parents[1]
+
+class ChatIn(BaseModel):
+    message: str=Field(min_length=1,max_length=3000)
+    attachment_ids: list[str]=Field(default_factory=list,max_length=4)
+
+class ProposalIn(BaseModel):
+    product_id: str=Field(pattern=r'^\d{1,12}$')
+    quantity: float=Field(gt=0,le=100000,allow_inf_nan=False)
+
+class ConfirmIn(BaseModel):
+    confirmation_id: str=Field(min_length=10,max_length=100)
+    confirmed: StrictBool=False
+
+class CancelIn(BaseModel):
+    confirmation_id: str=Field(min_length=10,max_length=100)
+
+def create_app(catalog=None,ai=None):
+    catalog=catalog or Catalog(); ai=ai or AI(); sessions={}
+
+    @asynccontextmanager
+    async def lifespan(app):
+        catalog.task=asyncio.create_task(catalog.index())
+        yield
+        await catalog.close(); await ai.client.aclose()
+
+    app=FastAPI(title='EKT Assistant',version='1.0.0',lifespan=lifespan)
+    app.add_middleware(BodyLimit)
+    app.state.sessions=sessions; app.state.catalog=catalog; app.state.ai=ai
+
+    @app.exception_handler(AppError)
+    async def app_error(request,error):
+        return JSONResponse({'error':{'code':error.code,'message':error.message}},status_code=error.status)
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request,error):
+        return JSONResponse({'error':{'code':'invalid_request','message':'Проверьте текст, идентификатор и положительное количество.'}},status_code=422)
+
+    @app.middleware('http')
+    async def protections(request,call_next):
+        if request.method=='POST':
+            try: content_length=int(request.headers.get('content-length','0'))
+            except ValueError: content_length=MAX_BYTES+65537
+            limit=MAX_BYTES+65536 if request.url.path=='/api/attachments' else 50000
+            if content_length>limit:
+                return JSONResponse({'error':{'code':'attachment_too_large','message':'Запрос слишком большой.'}},status_code=413)
+        response=await call_next(request)
+        response.headers['X-Content-Type-Options']='nosniff'
+        response.headers['Referrer-Policy']='strict-origin-when-cross-origin'
+        if request.url.path.startswith('/api/'):
+            response.headers['Cache-Control']='no-store'
+        return response
+
+    def session(request,create=False):
+        current=time.time()
+        for sid in list(sessions):
+            if sessions[sid].touched<current-7200: del sessions[sid]
+        s=sessions.get(request.cookies.get('ekt_session'))
+        if s is None:
+            if not create: raise AppError('session_required','Обновите страницу, чтобы начать новую сессию.',403)
+            if len(sessions)>=500: raise AppError('rate_limit','Сервер занят. Повторите позже.',429)
+            s=Session(); sessions[s.id]=s
+        s.touched=current
+        if request.method=='POST':
+            if not secrets.compare_digest(request.headers.get('x-csrf-token',''),s.csrf):
+                raise AppError('csrf','Сессия не подтверждена. Обновите страницу.',403)
+            s.limit()
+        return s
+
+    def integrations():
+        return {'catalog':'live' if catalog.live else ('snapshot' if catalog.rows else 'unavailable'),
+            'ai':'openai' if ai.key else 'fallback','cart':'demo','indexed_products':len(catalog.rows),
+            'index_complete':catalog.complete,
+            'notice':'Живой каталог ekt.kz; корзина демонстрационная.' if catalog.live else 'Синтетические демонстрационные товары. Это не актуальные цены и наличие ekt.kz.'}
+
+    def chat_result(s,text='',products=None,proposal=None,sources=None,warnings=None):
+        return {'message_id':secrets.token_hex(12),'text':text,'products':products or [],'proposal':proposal,
+            'cart':s.cart(),'sources':sources or [],'warnings':warnings or [],
+            'suggestions':['Условия доставки и оплаты','Найти аналог','Показать корзину'], 'integrations':integrations()}
+
+    @app.get('/api/health')
+    async def health(): return {'status':'ok','integrations':integrations()}
+
+    @app.get('/api/session')
+    async def get_session(request:Request):
+        s=session(request,True)
+        response=JSONResponse({'session_id':s.id,'csrf_token':s.csrf,'cart':s.cart(),'integrations':integrations()})
+        response.set_cookie('ekt_session',s.id,httponly=True,samesite='lax',secure=os.getenv('EKT_SECURE_COOKIE','false').lower()=='true',max_age=7200)
+        return response
+
+    @app.get('/api/products')
+    async def search(q:str=''):
+        if len(q)>300: raise AppError('invalid_request','Слишком длинный поисковый запрос.')
+        return {'products':await catalog.search(q),'index_complete':catalog.complete}
+
+    @app.get('/api/products/{pid}/alternatives')
+    async def alternatives(pid:str):
+        products,warnings=await catalog.alternatives(pid)
+        return {'products':products,'warnings':warnings}
+
+    @app.get('/api/products/{pid}')
+    async def detail(pid:str): return await catalog.detail(pid,fresh=catalog.live)
+
+    @app.get('/api/cart')
+    async def get_cart(request:Request): return session(request).cart()
+
+    @app.post('/api/cart/propose')
+    async def cart_propose(body:ProposalIn,request:Request):
+        s=session(request)
+        async with s.lock: return {'proposal':await propose(s,catalog,body.product_id,body.quantity),'cart':s.cart()}
+
+    @app.post('/api/cart/confirm')
+    async def cart_confirm(body:ConfirmIn,request:Request):
+        s=session(request)
+        async with s.lock: return await confirm(s,catalog,body.confirmation_id,body.confirmed)
+
+    @app.post('/api/cart/cancel')
+    async def cart_cancel(body:CancelIn,request:Request):
+        s=session(request)
+        async with s.lock:
+            if s.pending and secrets.compare_digest(s.pending['proposal']['confirmation_id'],body.confirmation_id): s.pending=None
+            return {'cart':s.cart()}
+
+    @app.post('/api/attachments')
+    async def attach(request:Request):
+        s=session(request)
+        async with s.lock:
+            if len(s.attachments)>=8: raise AppError('attachment_too_large','В сессии допускается 8 вложений. Начните новую сессию.',413)
+            data=bytearray()
+            async for chunk in request.stream():
+                data.extend(chunk)
+                if len(data)>MAX_BYTES+65536: raise AppError('attachment_too_large','Максимум 8 МБ на файл.',413)
+            from python_multipart.multipart import create_form_parser
+            files=[]; opened=[]
+            def on_file(f):
+                f.file_object.seek(0)
+                files.append(((f.file_name or b'file').decode('utf-8',errors='replace'),f.file_object.read(MAX_BYTES+1)))
+                opened.append(f)
+            try:
+                parser=create_form_parser({'Content-Type':request.headers.get('content-type','').encode()},None,on_file,
+                    config={'MAX_MEMORY_FILE_SIZE':MAX_BYTES+65536,'MAX_BODY_SIZE':MAX_BYTES+65536})
+                parser.write(bytes(data)); parser.finalize(); parser.close()
+            except Exception: raise AppError('invalid_attachment','Не удалось прочитать загрузку файла.',422)
+            finally:
+                for f in opened: f.close()
+            if len(files)!=1: raise AppError('invalid_attachment','Загрузите один файл за раз.',422)
+            attachment=await asyncio.to_thread(parse_file,*files[0]); aid=secrets.token_urlsafe(16)
+            s.attachments[aid]=attachment
+            return {'attachment_id':aid,**{k:v for k,v in attachment.items() if k!='image'}}
+
+    @app.post('/api/chat')
+    async def chat(body:ChatIn,request:Request):
+        s=session(request)
+        async with s.lock:
+            message=body.message.strip()
+            if not message: raise AppError('invalid_request','Напишите вопрос о товаре.')
+            for aid in body.attachment_ids:
+                if aid not in s.attachments: raise AppError('not_found','Вложение не найдено в этой сессии.',404)
+            affirmative=re.fullmatch(r'(?:да[,!\s]+)?добавь(?:те)?[.!\s]*',message,re.I)
+            if affirmative and s.pending and not body.attachment_ids:
+                result=await confirm(s,catalog,s.pending['proposal']['confirmation_id'],True)
+                return chat_result(s,result['text'])
+            s.pending=None  # A new request supersedes any previous quote, including refusal.
+            if re.fullmatch(r'(?:нет|отмена|не добавляй|не добавлять)[.!\s]*',message,re.I):
+                return chat_result(s,'Добавление отменено. Корзина не изменилась.')
+            if re.fullmatch(r'(?:показать |покажи |открыть |открой )?корзин[ау][.!\s]*',message,re.I):
+                return chat_result(s,'Откройте демонстрационную корзину по ссылке /cart. '+s.cart()['notice'])
+            attachments=[s.attachments[aid] for aid in body.attachment_ids]
+            intent,warnings=await ai.interpret(message,s,attachments)
+            if any(a['kind']=='image' for a in attachments) and (not ai.key or warnings):
+                return chat_result(s,'Фото не удалось распознать. Напишите маркировку или артикул текстом.',warnings=warnings)
+            s.history.append({'role':'user','text':message}); s.history=s.history[-10:]
+            action=intent['intent']; pid=intent.get('product_id'); query=intent.get('query') or message
+            if action=='terms': return chat_result(s,TERMS,sources=SOURCES,warnings=warnings)
+            if action=='other': return chat_result(s,'Здравствуйте! Помогу с товарами и условиями покупки. Напишите название, артикул или прикрепите маркировку. Цены и наличие проверю по каталогу.',warnings=warnings)
+            if pid:
+                # AI may select only visible session products or an ID literally present in the user text.
+                allowed={p['id'] for p in s.last_products}
+                if pid not in allowed and not re.search(r'(?<!\d)'+re.escape(pid)+r'(?!\d)',message): pid=None
+            products=[await catalog.detail(pid,fresh=catalog.live)] if pid else await catalog.search(query)
+            if action=='alternatives':
+                target=products[0] if len(products)==1 else next((p for p in products if p['id']==pid),None)
+                if target is None: return chat_result(s,'Уточните артикул исходного товара для подбора аналога.',products,warnings=warnings)
+                products,extra=await catalog.alternatives(target['id']); warnings+=extra
+                text='Кандидаты на замену: сравните характеристики и подтвердите совместимость у специалиста.' if products else 'Подходящий аналог пока не подтверждён.'
+            elif action=='add':
+                if len(products)!=1:
+                    s.last_products=products
+                    return chat_result(s,'Уточните, какой товар добавить: выберите карточку. Корзина пока не менялась.',products,warnings=warnings)
+                qty=intent.get('quantity')
+                if qty is None:
+                    s.last_products=products
+                    return chat_result(s,'Сколько единиц добавить? Укажите количество или выберите его в карточке.',products,warnings=warnings)
+                proposal=await propose(s,catalog,products[0]['id'],qty); s.last_products=products
+                return chat_result(s,f"Подтвердите добавление {qty:g}: {products[0]['name']}. До подтверждения корзина не меняется.",products,proposal,warnings=warnings)
+            else:
+                if not products:
+                    return chat_result(s,'В доступной выборке товар не найден. Уточните артикул или ID; отсутствие в поиске не означает отсутствие в магазине.',warnings=warnings)
+                text='Нашёл товары по каталогу. В карточках — цена, наличие, характеристики и доступные документы.'
+                if len(products)==1:
+                    p=products[0]
+                    stock='остаток не указан' if p['stock'] is None else f"в наличии {p['stock']:g}"
+                    price='цена не указана' if p['price'] is None else f"{p['price']:g} ₸"
+                    text=f"{p['name']}: {price}, {stock}. "
+                    text+=('Сертификат доступен в карточке.' if p['certificates'] else 'Ссылка на сертификат в данных каталога отсутствует.')
+                    if p['stock']==0:
+                        related,extra=await catalog.alternatives(p['id']); products+=related; warnings+=extra
+                        text+=' Ниже — доступные кандидаты на замену.' if related else ' Подтверждённый аналог не найден.'
+            s.last_products=products
+            warnings+=list(dict.fromkeys(w for p in products for w in p['warnings']))
+            if not catalog.complete: warnings.append('Поиск охватывает загруженную выборку, не весь каталог. Точное наличие проверяется по карточке.')
+            return chat_result(s,text,products,sources=[{'title':p['name'],'url':p['product_url']} for p in products],warnings=warnings)
+
+    dist=ROOT/'frontend'/'dist'
+    if (dist/'assets').exists(): app.mount('/assets',StaticFiles(directory=dist/'assets'),name='assets')
+
+    @app.get('/{path:path}')
+    async def frontend(path:str):
+        if path.startswith('api/'): raise AppError('not_found','Метод API не найден.',404)
+        index=dist/'index.html'
+        if index.exists(): return FileResponse(index)
+        return JSONResponse({'message':'Сервер готов. Соберите интерфейс: cd frontend && npm ci && npm run build.','api':'/docs'})
+
+    return app
+
+app=create_app()
