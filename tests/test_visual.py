@@ -167,6 +167,36 @@ def test_photo_constraints_persist_for_followup_but_clear_for_new_search_and_res
     assert client.get('/api/cart').json()['count'] == 0
 
 
+def test_photo_constraints_clear_for_explicit_other_product_and_whole_catalog(client):
+    rows = [product(1, 'Лампа TEST 10W', category='bulbs'),
+            product(2, 'Кабель TEST', category='cables')]
+    catalog = client.app.state.catalog
+    catalog.rows = {str(row['id']): row for row in rows}
+    catalog.details = copy.deepcopy(catalog.rows)
+    visual = observation('bulb')
+    scripted(client, intent(visual))
+    photo = post_photo(client)
+    assert photo.status_code == 200, photo.text
+    assert [item['id'] for item in photo.json()['products']] == ['1']
+    state = next(iter(client.app.state.sessions.values()))
+    assert state.last_visual == visual
+
+    scripted(client, intent(query='кабель'))
+    cable = client.post('/api/chat', json={'message': 'А кабель есть?'})
+    assert cable.status_code == 200, cable.text
+    assert [item['id'] for item in cable.json()['products']] == ['2']
+    assert state.last_visual is None
+
+    scripted(client, intent(visual))
+    assert post_photo(client).status_code == 200
+    assert state.last_visual == visual
+    overview = client.post('/api/chat', json={'message': 'Покажи весь каталог'})
+    assert overview.status_code == 200, overview.text
+    assert {item['id'] for item in overview.json()['products']} == {'1', '2'}
+    assert state.last_visual is None
+    assert client.get('/api/cart').json()['count'] == 0
+
+
 def test_read_brand_from_catalogue_properties_and_ignore_absent_photo_markings():
     row = product(1, 'Автоматический выключатель DRX 250', properties={'TORGOVAYA_MARKA': 'Legrand'})
     assert photo_candidate(row, observation(brand='Legrand', model='DRX250'))

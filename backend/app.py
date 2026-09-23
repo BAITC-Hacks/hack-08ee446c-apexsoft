@@ -271,6 +271,7 @@ def create_app(catalog=None,ai=None):
                 return respond('Откройте демонстрационную корзину по ссылке /cart. '+s.cart()['notice'])
             attachments=[s.attachments[aid] for aid in body.attachment_ids]
             document_ids=document_matches(catalog.rows,attachments)
+            if document_ids: s.last_visual=None
             if len(document_ids)>1:
                 products=await asyncio.gather(*(catalog.detail(pid,fresh=catalog.live) for pid in document_ids[:6]))
                 s.last_products=products
@@ -319,6 +320,7 @@ def create_app(catalog=None,ai=None):
                 query=without_budget(query,s.search_max_price)
             if action=='terms': return respond(TERMS,sources=SOURCES,warnings=warnings)
             if action=='overview':
+                s.last_visual=None
                 overview=await catalog.overview()
                 products=overview['products']
                 s.last_products=products; s.last_search_query=''; s.search_max_price=None
@@ -334,7 +336,7 @@ def create_app(catalog=None,ai=None):
             if action in {'search','detail','alternatives'}:
                 s.last_search_query=query
             search_options={'max_price':s.search_max_price} if action=='search' and s.search_max_price is not None else {}
-            if action=='search' and s.last_visual and search_followup(message):
+            if action=='search' and s.last_visual and is_overview(message):
                 search_options['visual']=s.last_visual
             elif action in {'search','detail'}:
                 s.last_visual=None
