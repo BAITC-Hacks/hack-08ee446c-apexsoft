@@ -132,7 +132,9 @@ export function ProductCard({
             {product.warehouses.map((w, index) => (
               <p key={index}>
                 {w.name}
-                <strong>{number(w.stock)}</strong>
+                <strong>
+                  {w.stock === null ? "Наличие уточняется" : number(w.stock)}
+                </strong>
               </p>
             ))}
           </div>

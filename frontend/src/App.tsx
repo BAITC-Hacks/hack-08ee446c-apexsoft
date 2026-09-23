@@ -89,6 +89,7 @@ export default function App() {
   const [connecting, setConnecting] = useState(true);
   const [busy, setBusy] = useState<Busy>(null);
   const [cart, setCart] = useState<Cart | null>(null);
+  const [cartDialogOpen, setCartDialogOpen] = useState(false);
   const [integrations, setIntegrations] = useState<Integrations | null>(null);
   const [messages, setMessages] = useState<ChatEntry[]>([]);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -429,7 +430,10 @@ export default function App() {
             <button
               className="mobile-cart icon-button"
               aria-label={`Открыть корзину, товаров: ${cart?.count ?? 0}`}
-              onClick={() => cartDialog.current?.showModal()}
+              onClick={() => {
+                cartDialog.current?.showModal();
+                setCartDialogOpen(true);
+              }}
             >
               <ShoppingCart size={22} />
               {!!cart?.count && <span>{cart.count}</span>}
@@ -835,7 +839,11 @@ export default function App() {
           </div>
         )}
       </div>
-      <dialog className="cart-dialog" ref={cartDialog}>
+      <dialog
+        className="cart-dialog"
+        ref={cartDialog}
+        onClose={() => setCartDialogOpen(false)}
+      >
         <div className="dialog-heading">
           <h2>Ваша корзина</h2>
           <button
@@ -846,6 +854,16 @@ export default function App() {
             <X size={22} />
           </button>
         </div>
+        {cartDialogOpen && notice && (
+          <div className="inline-notice" role="alert">
+            {notice}
+            {!connected && !connecting && (
+              <button className="text-button" onClick={() => void connect()}>
+                Подключиться повторно
+              </button>
+            )}
+          </div>
+        )}
         <CartContent cart={cart} loading={disabled} onRefresh={refreshCart} />
       </dialog>
     </div>

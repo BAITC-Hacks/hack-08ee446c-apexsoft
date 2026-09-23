@@ -23,6 +23,8 @@ let chatFails: boolean;
 let cancelFails: boolean;
 let confirmWait: Promise<void> | null;
 let chatWait: Promise<void> | null;
+let cartStatus: number;
+let attachmentName: string;
 const scrollIntoView = vi.fn();
 
 beforeEach(() => {
@@ -34,6 +36,8 @@ beforeEach(() => {
   cancelFails = false;
   confirmWait = null;
   chatWait = null;
+  cartStatus = 200;
+  attachmentName = "spec.pdf";
   Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
     configurable: true,
     value: scrollIntoView,
@@ -92,11 +96,25 @@ beforeEach(() => {
               cart: filledCart,
               text: "Добавлено 2 в демонстрационную корзину.",
             });
-      if (path === "/api/cart") return json(filledCart);
+      if (path === "/api/cart")
+        return cartStatus === 200
+          ? json(filledCart)
+          : json(
+              {
+                error: {
+                  code:
+                    cartStatus === 403
+                      ? "session_required"
+                      : "upstream_unavailable",
+                  message: "Не удалось обновить корзину.",
+                },
+              },
+              cartStatus,
+            );
       if (path === "/api/attachments")
         return json({
           attachment_id: "file-1",
-          name: "spec.pdf",
+          name: attachmentName,
           extracted_text: "Тестовый список",
           kind: "document",
           warnings: [],
@@ -158,7 +176,8 @@ describe("chat scrolling and focus", () => {
       // The end anchor must include the composer and its error area, not stop
       // above them and leave the next action below the viewport.
       expect(
-        field.compareDocumentPosition(target) & Node.DOCUMENT_POSITION_FOLLOWING,
+        field.compareDocumentPosition(target) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy();
       expect(scrollIntoView).toHaveBeenLastCalledWith({
         behavior: "auto",
@@ -196,7 +215,139 @@ describe("chat scrolling and focus", () => {
   });
 });
 
+describe("recoverable response errors", () => {
+  it("preserves the conversation and draft when a successful chat response is malformed", async () => {
+    const user = await search();
+    chatResponse.products = null as unknown as typeof chat.products;
+    const field = screen.getByRole("textbox", {
+      name: "Ваш запрос консультанту",
+    });
+    await user.type(field, "Следующий вопрос");
+    await user.click(
+      screen.getByRole("button", { name: "Отправить сообщение" }),
+    );
+    await screen.findByRole("alert");
+    expect(screen.getByText("Найден тестовый товар.")).toBeInTheDocument();
+    expect(field).toHaveValue("Следующий вопрос");
+    expect(field).toBeEnabled();
+    expect(field).toHaveFocus();
+  });
+
+  it.each([503, 403])(
+    "shows a cart failure and recovery inside the open mobile dialog (%s)",
+    async (status) => {
+      Object.defineProperty(HTMLDialogElement.prototype, "showModal", {
+        configurable: true,
+        value: function (this: HTMLDialogElement) {
+          this.open = true;
+        },
+      });
+      const user = userEvent.setup();
+      render(<App />);
+      await waitFor(() =>
+        expect(
+          screen.getByRole("button", { name: "Прикрепить файл" }),
+        ).toBeEnabled(),
+      );
+      await user.click(
+        screen.getByRole("button", { name: "Открыть корзину, товаров: 0" }),
+      );
+      const dialog = within(screen.getByRole("dialog"));
+      cartStatus = status;
+      await user.click(
+        dialog.getByRole("button", { name: "Обновить корзину" }),
+      );
+      expect(await dialog.findByRole("alert")).toHaveTextContent(
+        "Не удалось обновить корзину.",
+      );
+      cartStatus = 200;
+      if (status === 403) {
+        await user.click(
+          dialog.getByRole("button", { name: "Подключиться повторно" }),
+        );
+        await waitFor(() =>
+          expect(
+            dialog.getByRole("button", { name: "Обновить корзину" }),
+          ).toBeEnabled(),
+        );
+        expect(
+          calls.filter((call) => call.path === "/api/session"),
+        ).toHaveLength(2);
+      }
+      await user.click(
+        dialog.getByRole("button", { name: "Обновить корзину" }),
+      );
+      await dialog.findByRole("heading", { name: "Тестовый кабель" });
+      expect(dialog.queryByRole("alert")).not.toBeInTheDocument();
+    },
+  );
+});
+
 describe("explicit cart consent and honest data", () => {
+  it("renders API and file HTML as text and omits executable source and certificate links", async () => {
+    const payloads = {
+      text: '<script>alert("reply")</script>',
+      name: '<img src=x onerror="alert(1)">',
+      description: '<svg onload="alert(2)">description</svg>',
+      warning: '<b onclick="alert(3)">warning</b>',
+      source: '<em onmouseover="alert(4)">source</em>',
+      file: '<img src=x onerror="alert(5)">.pdf',
+    };
+    attachmentName = payloads.file;
+    chatResponse = {
+      ...chat,
+      text: payloads.text,
+      warnings: [payloads.warning],
+      products: [
+        {
+          ...product,
+          name: payloads.name,
+          description: payloads.description,
+          certificates: [
+            { name: "Опасный сертификат", url: "javascript:alert(6)" },
+          ],
+        },
+      ],
+      sources: [
+        { title: payloads.source, url: "https://ekt.kz/catalog/" },
+        { title: "Опасный источник", url: "javascript:alert(7)" },
+      ],
+    };
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+    const input = screen.getByLabelText("Файл для консультанта");
+    await waitFor(() => expect(input).toBeEnabled());
+    await user.upload(
+      input,
+      new File(["synthetic document"], payloads.file, {
+        type: "application/pdf",
+      }),
+    );
+    await screen.findByText(payloads.file);
+    await user.click(
+      screen.getByRole("button", { name: "Отправить сообщение" }),
+    );
+    await screen.findByText(payloads.text);
+    await user.click(screen.getByText("Характеристики и документы"));
+    for (const text of Object.values(payloads))
+      expect(screen.getByText(text)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: payloads.source })).toHaveAttribute(
+      "href",
+      "https://ekt.kz/catalog/",
+    );
+    expect(
+      screen.queryByRole("link", { name: "Опасный источник" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: "Опасный сертификат" }),
+    ).not.toBeInTheDocument();
+    expect(
+      container.querySelector(
+        'script, img, [onerror], [onload], [onclick], [onmouseover], a[href^="javascript:"]',
+      ),
+    ).toBeNull();
+  });
+
   it("does not confirm during search or proposal; confirms only after the explicit button, with CSRF and cookie", async () => {
     const user = await propose();
     expect(
@@ -261,6 +412,24 @@ describe("explicit cart consent and honest data", () => {
     expect(
       calls.filter((call) => call.path.startsWith("/api/cart/")),
     ).toHaveLength(0);
+  });
+
+  it("distinguishes an unknown warehouse quantity from a confirmed zero", async () => {
+    chatResponse.products = [
+      {
+        ...product,
+        warehouses: [
+          { name: "Неизвестный склад", stock: null },
+          { name: "Пустой склад", stock: 0 },
+        ],
+      },
+    ];
+    const user = await search();
+    await user.click(screen.getByText("Характеристики и документы"));
+    expect(screen.getByText("Неизвестный склад")).toHaveTextContent(
+      "Наличие уточняется",
+    );
+    expect(screen.getByText("Пустой склад")).toHaveTextContent("Пустой склад0");
   });
 
   it("rejects quantities over the available stock before proposing", async () => {
