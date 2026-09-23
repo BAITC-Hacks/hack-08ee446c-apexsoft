@@ -280,8 +280,10 @@ export default function App() {
       setNotice("Поддерживаются JPEG, PNG, PDF, DOCX, XLSX и XLS.");
       return;
     }
-    if (attachments.length >= 5) {
-      setNotice("Отправьте текущие вложения перед добавлением новых файлов.");
+    if (attachments.length >= 4) {
+      setNotice(
+        "Можно отправить до 4 вложений за один запрос. Сначала отправьте текущие файлы.",
+      );
       return;
     }
     void run("upload", async () => {
@@ -707,7 +709,7 @@ export default function App() {
                     rows={2}
                     value={draft}
                     disabled={!!busy}
-                    maxLength={10000}
+                    maxLength={3000}
                     onChange={(e) => setDraft(e.target.value)}
                     placeholder="Например: нужен кабель для проводки в квартире…"
                     onKeyDown={(e) => {
