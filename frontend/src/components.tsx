@@ -78,6 +78,7 @@ export function ProductCard({
   const url = safeUrl(product.product_url);
   const productUrl = url && !/^\/(?:catalog\/?)?$/.test(new URL(url).pathname) ? url : null;
   const description = product.description.trim();
+  const descriptionPreview = description.replace(/\s+/g, " ");
   const longDescription = description.length > 320;
   const date = new Date(product.checked_at);
   const stock = product.stock;
@@ -116,7 +117,7 @@ export function ProductCard({
       <div className="product-description">
         <p>{description
           ? longDescription && !descriptionExpanded
-            ? `${description.slice(0, 320).replace(/\s+\S*$/, "")}…`
+            ? `${descriptionPreview.slice(0, 320).replace(/\s+\S*$/, "")}…`
             : description
           : "Описание в каталоге не указано."}</p>
         {longDescription && (
