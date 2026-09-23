@@ -149,6 +149,37 @@ class Catalog:
         source='live' if pid in self.checked else 'snapshot'
         return normalize(self.details[pid],source,self.checked.get(pid,self.snapshot_time))
 
+    async def overview(self,limit=6):
+        """Examples from loaded categories, with the same verified facts as search.
+
+        Category values are identifiers supplied by product URLs, not a claim
+        that we know every department or every product sold by the store.
+        """
+        limit=max(1,min(12,int(limit)))
+        rows=list(self.rows.items())
+        first=[]; remaining=[]; categories=[]; seen=set()
+        for pid,row in rows:
+            category=normalize(row)['category']
+            if category and category not in seen:
+                seen.add(category); categories.append(category); first.append(pid)
+            else:
+                remaining.append(pid)
+        candidates=(first+remaining)[:limit*3]
+        products=[]
+        # Limit parallel calls; a removed example must not hide another category.
+        for start in range(0,len(candidates),limit):
+            results=await asyncio.gather(*(self.detail(pid,fresh=self.live)
+                for pid in candidates[start:start+limit]),return_exceptions=True)
+            for result in results:
+                if isinstance(result,AppError) and result.code=='not_found': continue
+                if isinstance(result,BaseException): raise result
+                products.append(result)
+            if len(products)>=limit: break
+        if self.live and not rows:
+            raise AppError('upstream_unavailable','Каталог ещё загружается. Повторите запрос позже или укажите ID товара.',503)
+        return {'products':products[:limit], 'categories':categories[:24],
+                'indexed_products':len(self.rows), 'index_complete':self.complete}
+
     async def search(self,query,limit=6):
         query=query.strip(); ts=[t for t in tokens(query) if t not in {'есть','ли','найди','нужен','нужно','мне','купить','покажи','товар','наличие','сколько','стоит','пожалуйста','для','на','в','и','с','по'}]
         # Model numbers and ratings (GL 1004D, 4000 К) are not internal catalogue IDs.
