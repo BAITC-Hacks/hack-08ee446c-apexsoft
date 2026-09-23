@@ -46,8 +46,11 @@ def normalize(raw, source='live', checked_at=None):
     props = raw.get('properties')
     if not isinstance(props, dict): props = {}
     name = clean(raw.get('name'))
-    url = safe_url(raw.get('url')) or 'https://ekt.kz/'
-    category = unquote(urlsplit(url).path.strip('/').split('/')[-2]) if '/' in urlsplit(url).path.strip('/') else ''
+    url = safe_url(raw.get('url'))
+    path = urlsplit(url).path.strip('/') if url else ''
+    # A home/catalog page is not a link to this product. Keep missing links absent.
+    if path in ('', 'catalog'): url = None
+    category = unquote(path.split('/')[-2]) if '/' in path else ''
     specs = [{'name': LABELS[k], 'value': clean(v)} for k,v in props.items() if k in LABELS and isinstance(v,(str,int,float)) and str(v).strip()]
     certificates = []
     for key,value in props.items():

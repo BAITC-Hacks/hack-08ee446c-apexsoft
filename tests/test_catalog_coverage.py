@@ -4,7 +4,7 @@ import asyncio
 import httpx
 import pytest
 
-from backend.catalog import Catalog
+from backend.catalog import Catalog, normalize
 from backend.errors import AppError
 
 
@@ -69,3 +69,17 @@ def test_empty_live_overview_reports_loading_not_absence(monkeypatch):
             await catalog.overview()
         assert error.value.status==503
     run_catalog(monkeypatch,scenario,lambda _: httpx.Response(503))
+
+
+@pytest.mark.parametrize('url',[None,'','https://ekt.kz/','https://ekt.kz/catalog/','javascript:alert(1)'])
+def test_missing_product_link_is_not_replaced_with_store_home(url):
+    product=normalize({'id':1,'url':url})
+    assert product['product_url'] is None
+
+
+def test_real_photo_description_and_deep_link_are_preserved():
+    product=normalize({'id':1,'url':'/catalog/tools/drill/', 'image':'/upload/drill.jpg',
+                       'description':'<p>Описание дрели</p>'})
+    assert product['product_url']=='https://ekt.kz/catalog/tools/drill/'
+    assert product['image_url']=='https://ekt.kz/upload/drill.jpg'
+    assert product['description']=='Описание дрели'
