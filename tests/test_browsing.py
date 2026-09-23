@@ -67,3 +67,33 @@ def test_named_tool_search_preserves_requested_specs_when_model_overclarifies(cl
 @pytest.mark.parametrize('message',['Какой кабель нужен для дрели?','Не нужен шуруповерт','Добавь шуруповерт','Почему дрель греется?'])
 def test_shortcut_does_not_override_other_intents(message):
     assert named_tool_query(message) is None
+
+
+def test_budget_is_separate_from_model_codes_and_survives_generic_followup(client,monkeypatch):
+    calls=[]
+    async def search(query,limit=6,max_price=None):
+        calls.append((query,max_price)); return []
+    monkeypatch.setattr(client.app.state.catalog,'search',search)
+    client.post('/api/chat',json={'message':'шуруповёрт'})
+    result=client.post('/api/chat',json={'message':'аккумуляторный, бюджет до 50 000 тенге'}).json()
+    assert calls[-1][1]==50000 and 'шуруповёрт' in calls[-1][0]
+    assert '50000' not in calls[-1][0] and '50 000' not in calls[-1][0]
+    assert 'в бюджете до 50000' in result['text']
+    client.post('/api/chat',json={'message':'покажи варианты'})
+    assert calls[-1][1]==50000 and 'шуруповёрт' in calls[-1][0]
+    client.post('/api/chat',json={'message':'Покажи LED ECO-PRISMA 36W'})
+    assert calls[-1][1] is None and '36W'.lower() in calls[-1][0].lower()
+
+
+def test_reset_discards_budget(client):
+    client.post('/api/chat',json={'message':'шуруповёрт, бюджет до 50000 тенге'})
+    session=next(iter(client.app.state.sessions.values()))
+    assert session.search_max_price==50000
+    client.post('/api/chat/reset',json={})
+    assert session.search_max_price is None
+
+
+def test_budget_parser_does_not_consume_technical_limits():
+    from backend.browsing import budget_from_message, without_budget
+    assert budget_from_message('автомат до 16 А') is None
+    assert without_budget('автомат до 16 А до 50000 тенге',50000)=='автомат до 16 А'

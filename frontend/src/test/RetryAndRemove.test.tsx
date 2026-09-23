@@ -1,10 +1,37 @@
 import { beforeEach, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import App from '../App';
 import { chat, emptyCart, filledCart, integrations, product } from './fixtures';
 
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), {status});
+
+it('gives two distinct products separate removal buttons and retains the other line', async () => {
+  window.history.replaceState({}, '', '/cart');
+  const first={...product,id:'first',name:'Дрель первая'};
+  const second={...product,id:'second',name:'Дрель вторая'};
+  let cart={...emptyCart,items:[{product:first,quantity:1,line_total:150},{product:second,quantity:2,line_total:300}],count:3,total:450,version:1};
+  const removed:string[]=[];
+  vi.stubGlobal('fetch',vi.fn(async (url:string,init?:RequestInit) => {
+    if(url==='/api/session') return json({session_id:'test',csrf_token:'csrf',cart,integrations});
+    if(url==='/api/cart/remove') {
+      const body=JSON.parse(String(init?.body)); removed.push(body.product_id);
+      cart={...cart,items:cart.items.filter(i=>i.product.id!==body.product_id),count:2,total:300,version:2};
+      return json({cart});
+    }
+    throw new Error(url);
+  }));
+  const user=userEvent.setup(); const {container}=render(<App/>);
+  await screen.findByRole('heading',{name:first.name});
+  const rows=container.querySelectorAll('.cart-items-full .cart-item');
+  expect(rows).toHaveLength(2);
+  expect(within(rows[0] as HTMLElement).getByRole('button',{name:`Удалить ${first.name} из корзины`})).toBeVisible();
+  expect(within(rows[1] as HTMLElement).getByRole('button',{name:`Удалить ${second.name} из корзины`})).toBeVisible();
+  await user.click(screen.getByRole('button',{name:`Удалить ${first.name} из корзины`}));
+  await waitFor(()=>expect(screen.queryByRole('heading',{name:first.name})).not.toBeInTheDocument());
+  expect(screen.getByRole('heading',{name:second.name})).toBeVisible();
+  expect(removed).toEqual(['first']);
+});
 beforeEach(() => window.history.replaceState({}, '', '/'));
 
 it('reuses the same chat request id after a lost reply, but not for the next message', async () => {

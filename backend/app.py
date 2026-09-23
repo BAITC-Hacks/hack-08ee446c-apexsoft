@@ -24,7 +24,7 @@ from .errors import AppError
 from .knowledge import SOURCES, TERMS
 from .state import Session, propose, confirm
 from .language import detect_language, localize_response, localize_text, normalize_command
-from .browsing import is_overview
+from .browsing import is_overview, budget_from_message, without_budget, search_followup, named_tool_query
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -217,6 +217,7 @@ def create_app(catalog=None,ai=None):
         async with s.lock:
             s.history.clear(); s.last_products.clear(); s.attachments.clear(); s.pending=None
             s.last_search_query=''
+            s.search_max_price=None
             s.chat_receipts.clear()
             return localize_response({'cart':s.cart()},s.language)
 
@@ -270,11 +271,23 @@ def create_app(catalog=None,ai=None):
             if any(a['kind']=='image' for a in attachments) and (not ai.key or warnings):
                 return respond('Фото не удалось распознать. Напишите маркировку или артикул текстом.',warnings=warnings)
             action=intent['intent']; pid=intent.get('product_id'); query=intent.get('query') or message
+            budget=budget_from_message(message)
+            if budget is not None and action in {'search','detail','clarify','other'}:
+                query=without_budget(query,budget)
+                if s.last_search_query and not named_tool_query(message) and not named_tool_query(query):
+                    query=s.last_search_query+' '+without_budget(message,budget)
+                s.search_max_price=budget
+                action='search'; pid=None
+                if not query.strip(): return respond('Напишите, какой товар подобрать в этом бюджете.',warnings=warnings)
+            elif action in {'search','detail'} and not search_followup(message) and query!=s.last_search_query:
+                s.search_max_price=None
+            if action=='search' and s.search_max_price is not None:
+                query=without_budget(query,s.search_max_price)
             if action=='terms': return respond(TERMS,sources=SOURCES,warnings=warnings)
             if action=='overview':
                 overview=await catalog.overview()
                 products=overview['products']
-                s.last_products=products; s.last_search_query=''
+                s.last_products=products; s.last_search_query=''; s.search_max_price=None
                 if not catalog.complete: warnings.append('Поиск охватывает загруженную выборку, не весь каталог. Точное наличие проверяется по карточке.')
                 return respond('Вот примеры товаров из доступного каталога. Напишите, какой товар или задача вас интересует.',products,
                     sources=[{'title':p['name'],'url':p['product_url']} for p in products if p.get('product_url')],warnings=warnings)
@@ -286,7 +299,8 @@ def create_app(catalog=None,ai=None):
                 if pid not in allowed: pid=None
             if action in {'search','detail','alternatives'}:
                 s.last_search_query=query
-            products=[await catalog.detail(pid,fresh=catalog.live)] if pid else await catalog.search(query)
+            search_options={'max_price':s.search_max_price} if action=='search' and s.search_max_price is not None else {}
+            products=[await catalog.detail(pid,fresh=catalog.live)] if pid else await catalog.search(query,**search_options)
             if action=='alternatives':
                 target=products[0] if len(products)==1 else next((p for p in products if p['id']==pid),None)
                 if target is None: return respond('Уточните исходный товар для подбора аналога: укажите название, маркировку или выберите карточку.',products,warnings=warnings)
@@ -304,6 +318,8 @@ def create_app(catalog=None,ai=None):
                 return respond(f"Подтвердите добавление {qty:g}: {products[0]['name']}. До подтверждения корзина не меняется.",products,proposal,warnings=warnings)
             else:
                 if not products:
+                    if action=='search' and s.search_max_price is not None:
+                        return respond(f'В доступном каталоге не нашёл товары по этим условиям в бюджете до {s.search_max_price:g} ₸. Можно изменить бюджет или требования.',warnings=warnings)
                     return respond('В доступной выборке товар не найден. Попробуйте название, маркировку или другое описание; отсутствие в поиске не означает отсутствие в магазине.',warnings=warnings)
                 text='Нашёл товары по каталогу. В карточках — цена, наличие, характеристики и доступные документы.'
                 if len(products)==1:
@@ -314,6 +330,8 @@ def create_app(catalog=None,ai=None):
                     text+=('Сертификат доступен в карточке.' if p['certificates'] else 'Ссылка на сертификат в данных каталога отсутствует.')
                     if p['stock']==0:
                         related,extra=await catalog.alternatives(p['id']); products+=related; warnings+=extra
+                        if s.search_max_price is not None:
+                            products=[item for item in products if item['price'] is not None and item['price']<=s.search_max_price]
                         text+=' Ниже — доступные кандидаты на замену.' if related else ' Подтверждённый аналог не найден.'
             s.last_products=products
             warnings+=list(dict.fromkeys(w for p in products for w in p['warnings']))

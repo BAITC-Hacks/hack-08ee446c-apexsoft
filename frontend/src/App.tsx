@@ -26,6 +26,7 @@ import {
   Zap,
 } from "lucide-react";
 import { api, ApiError, errorMessage, number, safeUrl } from "./api";
+import { loadChat, saveChat, sessionTag } from "./chatStorage";
 import {
   Brand,
   CartContent,
@@ -89,7 +90,10 @@ const operationLabels: Record<Exclude<Busy, null>, string> = {
 };
 
 export default function App() {
-  const [draft, setDraft] = useState("");
+  const [restored] = useState(loadChat);
+  const [draft, setDraft] = useState(restored.draft);
+  const [savedSessionTag, setSavedSessionTag] = useState(restored.sessionTag);
+  const [storageUnavailable, setStorageUnavailable] = useState(false);
   const [notice, setNotice] = useState("");
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(true);
@@ -97,7 +101,7 @@ export default function App() {
   const [cart, setCart] = useState<Cart | null>(null);
   const [cartDialogOpen, setCartDialogOpen] = useState(false);
   const [integrations, setIntegrations] = useState<Integrations | null>(null);
-  const [messages, setMessages] = useState<ChatEntry[]>([]);
+  const [messages, setMessages] = useState<ChatEntry[]>(restored.messages);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [proposalStale, setProposalStale] = useState(false);
@@ -106,9 +110,11 @@ export default function App() {
   const fileInput = useRef<HTMLInputElement>(null);
   const cartDialog = useRef<HTMLDialogElement>(null);
   const conversationEnd = useRef<HTMLDivElement>(null);
-  const followSubmittedChat = useRef(false);
+  const confirmationRegion = useRef<HTMLDivElement>(null);
+  const shownConfirmation = useRef<string | null>(null);
+  const followSubmittedChat = useRef(restored.messages.length > 0);
   const requestLock = useRef(false);
-  const chatAttempt = useRef<{ payload: string; id: string } | null>(null);
+  const chatAttempt = useRef(restored.attempt);
   const isCartPage = window.location.pathname === "/cart";
   const expired =
     !!proposal &&
@@ -125,16 +131,30 @@ export default function App() {
       setCart(data.cart);
       setIntegrations(data.integrations);
       setConnected(true);
+      const tag = await sessionTag(data.session_id);
+      setSavedSessionTag(tag);
+      if (restored.sessionTag && tag && restored.sessionTag !== tag) {
+        chatAttempt.current = null;
+        setNotice("Переписка и черновик восстановлены. Сервер начал новую сессию: прежний контекст подбора нужно уточнить, корзина загружена заново.");
+      } else if (restored.pendingProposal || restored.pendingFiles) {
+        setNotice(["Переписка и черновик восстановлены.",
+          restored.pendingProposal ? "Перед добавлением снова проверьте товар." : "",
+          restored.pendingFiles ? "Неотправленные файлы прикрепите повторно." : ""].filter(Boolean).join(" "));
+      }
     } catch (error) {
       setNotice(errorMessage(error));
       setConnected(false);
     } finally {
       setConnecting(false);
     }
-  }, []);
+  }, [restored]);
   useEffect(() => {
     void connect();
   }, [connect]);
+  useEffect(() => {
+    setStorageUnavailable(!saveChat({ draft, messages, sessionTag: savedSessionTag,
+      pendingProposal: !!proposal, pendingFiles: attachments.length > 0, attempt: chatAttempt.current }));
+  }, [draft, messages, savedSessionTag, proposal, attachments.length, busy]);
   useEffect(() => {
     if (!proposal) return;
     setNow(Date.now());
@@ -154,6 +174,18 @@ export default function App() {
       block: "end",
     });
   }, [messages.length, busy, notice]);
+  useLayoutEffect(() => {
+    if (busy || !proposal || shownConfirmation.current === proposal.confirmation_id) return;
+    const region = confirmationRegion.current;
+    if (!region) return;
+    shownConfirmation.current = proposal.confirmation_id;
+    const rect = region.getBoundingClientRect();
+    if (rect.top < 0 || rect.bottom > window.innerHeight) {
+      const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+      region.scrollIntoView?.({ block: "center", behavior: reducedMotion ? "auto" : "smooth" });
+    }
+    region.focus({ preventScroll: true });
+  }, [proposal, busy]);
 
   function start(text: string) {
     setDraft(text);
@@ -686,6 +718,7 @@ export default function App() {
                   ))}
                 </div>
                 {proposal && (
+                  <div ref={confirmationRegion} tabIndex={-1} role="region" aria-label="Подтверждение выбранного товара">
                   <Confirmation
                     proposal={proposal}
                     expired={expired}
@@ -696,6 +729,7 @@ export default function App() {
                       propose(proposal.product, proposal.quantity)
                     }
                   />
+                  </div>
                 )}
                 {busy && (
                   <div className="busy-indicator" role="status">
@@ -807,6 +841,11 @@ export default function App() {
                   При включённом ИИ текст и вложения обрабатывает OpenAI. Не
                   прикладывайте платёжные данные и чужие персональные или
                   конфиденциальные сведения.
+                </p>
+                <p className="upload-privacy" role={storageUnavailable ? "status" : undefined}>
+                  {storageUnavailable
+                    ? "Браузер не разрешил сохранить чат. При обновлении страницы переписка и черновик могут потеряться."
+                    : "Переписка и черновик сохраняются при обновлении этой вкладки. «Новый запрос» очищает их."}
                 </p>
                 <p className="composer-note">
                   <ShieldCheck size={14} />

@@ -371,7 +371,7 @@ export function CartContent({
                 onClick={() => onRemove(item.product)}
                 aria-label={`Удалить ${item.product.name} из корзины`}
               >
-                <X size={14} /> Удалить из корзины
+                <X size={14} /> Удалить этот товар
               </button>
             </article>
           ))}
