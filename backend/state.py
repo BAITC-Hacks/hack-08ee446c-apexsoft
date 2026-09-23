@@ -18,9 +18,11 @@ class Session:
     version: int=0
     pending: dict|None=None
     receipts: dict=field(default_factory=dict)
+    chat_receipts: dict=field(default_factory=dict)
     attachments: dict=field(default_factory=dict)
     history: list=field(default_factory=list)
     last_products: list=field(default_factory=list)
+    language: str='ru'
     calls: list=field(default_factory=list)
     lock: asyncio.Lock=field(default_factory=asyncio.Lock)
 
@@ -62,9 +64,11 @@ async def propose(session,catalog,pid,quantity):
 async def confirm(session,catalog,confirmation_id,confirmed):
     if confirmed is not True: raise AppError('confirmation_required','Нужно явное подтверждение добавления.',403)
     if confirmation_id in session.receipts:
-        return copy.deepcopy(session.receipts[confirmation_id])
+        response=copy.deepcopy(session.receipts[confirmation_id])
+        response['cart']=session.cart()
+        return response
     pending=session.pending
-    if not pending or not secrets.compare_digest(pending['proposal']['confirmation_id'],confirmation_id):
+    if not pending or not secrets.compare_digest(pending['proposal']['confirmation_id'].encode('utf-8'),confirmation_id.encode('utf-8')):
         raise AppError('confirmation_invalid','Предложение не найдено в этой сессии. Создайте новое.',403)
     if time.time()>pending['expires']:
         session.pending=None

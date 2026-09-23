@@ -1,11 +1,5 @@
-import type {
-  Attachment,
-  Cart,
-  ChatResponse,
-  Product,
-  Proposal,
-  Session,
-} from "./types";
+import type { Product, Session } from "./types";
+import { responseChecks, type ResponseCheck } from "./responseValidation";
 
 export class ApiError extends Error {
   status: number;
@@ -23,6 +17,7 @@ let sessionRequest: Promise<Session> | null = null;
 
 async function request<T>(
   path: string,
+  check: ResponseCheck<T>,
   body?: Record<string, unknown> | FormData,
 ): Promise<T> {
   const controller = new AbortController();
@@ -44,7 +39,7 @@ async function request<T>(
             : undefined,
       signal: controller.signal,
     });
-    let data;
+    let data: unknown;
     try {
       data = await response.json();
     } catch (error) {
@@ -55,14 +50,27 @@ async function request<T>(
         "invalid_response",
       );
     }
-    if (!response.ok)
+    if (!response.ok) {
+      if (!responseChecks.failure(data))
+        throw new ApiError(
+          "Сервис пока недоступен. Попробуйте подключиться ещё раз.",
+          response.status,
+          "invalid_response",
+        );
       throw new ApiError(
         data.error?.message ||
           "Не удалось выполнить запрос. Попробуйте ещё раз.",
         response.status,
         data.error?.code || "request_failed",
       );
-    return data as T;
+    }
+    if (!check(data))
+      throw new ApiError(
+        "Сервис пока недоступен. Попробуйте подключиться ещё раз.",
+        response.status,
+        "invalid_response",
+      );
+    return data;
   } catch (error) {
     if (error instanceof ApiError) throw error;
     if (controller.signal.aborted)
@@ -83,7 +91,7 @@ export const api = {
   session: () => {
     // React StrictMode and concurrent consumers share the same initialization.
     if (!sessionRequest)
-      sessionRequest = request<Session>("/api/session")
+      sessionRequest = request("/api/session", responseChecks.session)
         .then((data) => {
           csrfToken = data.csrf_token;
           return data;
@@ -93,31 +101,37 @@ export const api = {
         });
     return sessionRequest;
   },
-  chat: (message: string, attachment_ids: string[]) =>
-    request<ChatResponse>("/api/chat", { message, attachment_ids }),
+  chat: (message: string, attachment_ids: string[], request_id?: string) =>
+    request("/api/chat", responseChecks.chat, { message, attachment_ids, request_id }),
+  resetChat: () => request("/api/chat/reset", responseChecks.cartResult, {}),
+  removeAttachments: (attachment_ids: string[]) =>
+    request("/api/attachments/remove", responseChecks.removed, { attachment_ids }),
   propose: (product_id: string, quantity: number) =>
-    request<{ proposal: Proposal; cart: Cart }>("/api/cart/propose", {
+    request("/api/cart/propose", responseChecks.propose, {
       product_id,
       quantity,
     }),
   confirm: (confirmation_id: string) =>
-    request<{ cart: Cart; text: string }>("/api/cart/confirm", {
+    request("/api/cart/confirm", responseChecks.confirm, {
       confirmation_id,
       confirmed: true,
     }),
   cancel: (confirmation_id: string) =>
-    request<{ cart: Cart }>("/api/cart/cancel", { confirmation_id }),
-  cart: () => request<Cart>("/api/cart"),
+    request("/api/cart/cancel", responseChecks.cartResult, { confirmation_id }),
+  cart: () => request("/api/cart", responseChecks.cart),
+  removeCartItem: (product_id: string, version: number) =>
+    request("/api/cart/remove", responseChecks.cartResult, { product_id, version, confirmed: true }),
   product: (id: string) =>
-    request<Product>(`/api/products/${encodeURIComponent(id)}`),
+    request(`/api/products/${encodeURIComponent(id)}`, responseChecks.product),
   alternatives: (id: string) =>
-    request<{ products: Product[]; warnings: string[] }>(
+    request(
       `/api/products/${encodeURIComponent(id)}/alternatives`,
+      responseChecks.alternatives,
     ),
   upload: (file: File) => {
     const body = new FormData();
     body.append("file", file);
-    return request<Attachment>("/api/attachments", body);
+    return request("/api/attachments", responseChecks.attachment, body);
   },
 };
 

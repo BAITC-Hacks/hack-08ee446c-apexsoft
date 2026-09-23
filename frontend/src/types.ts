@@ -13,7 +13,7 @@ export interface Product {
   product_url: string;
   specifications: { name: string; value: string }[];
   certificates: { name: string; url: string }[];
-  warehouses: { name: string; stock: number }[];
+  warehouses: { name: string; stock: number | null }[];
   warnings: string[];
   source: "live" | "snapshot";
   checked_at: string;

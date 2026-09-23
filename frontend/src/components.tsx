@@ -8,6 +8,7 @@ import {
   RefreshCw,
   ShieldCheck,
   ShoppingCart,
+  X,
 } from "lucide-react";
 import type { Cart, Product, Proposal } from "./types";
 import { money, number, quantityError, safeUrl } from "./api";
@@ -132,7 +133,9 @@ export function ProductCard({
             {product.warehouses.map((w, index) => (
               <p key={index}>
                 {w.name}
-                <strong>{number(w.stock)}</strong>
+                <strong>
+                  {w.stock === null ? "Наличие уточняется" : number(w.stock)}
+                </strong>
               </p>
             ))}
           </div>
@@ -314,11 +317,13 @@ export function CartContent({
   cart,
   loading,
   onRefresh,
+  onRemove,
   full = false,
 }: {
   cart: Cart | null;
   loading: boolean;
   onRefresh: () => void;
+  onRemove: (product: Product) => void;
   full?: boolean;
 }) {
   return (
@@ -341,6 +346,14 @@ export function CartContent({
                   Демонстрационные данные
                 </span>
               )}
+              <button
+                className="refresh-cart"
+                disabled={loading}
+                onClick={() => onRemove(item.product)}
+                aria-label={`Удалить ${item.product.name} из корзины`}
+              >
+                <X size={14} /> Удалить из корзины
+              </button>
             </article>
           ))}
           <div className="cart-total">

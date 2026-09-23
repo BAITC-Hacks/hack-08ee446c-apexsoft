@@ -1,5 +1,8 @@
 import asyncio
+import copy
+import hashlib
 import io
+import json
 import os
 import re
 import secrets
@@ -20,23 +23,33 @@ from .catalog import Catalog
 from .errors import AppError
 from .knowledge import SOURCES, TERMS
 from .state import Session, propose, confirm
+from .language import detect_language, localize_response, localize_text, normalize_command
 
 ROOT=Path(__file__).resolve().parents[1]
 
 class ChatIn(BaseModel):
     message: str=Field(min_length=1,max_length=3000)
     attachment_ids: list[str]=Field(default_factory=list,max_length=4)
+    request_id: str|None=Field(default=None,pattern=r'^[A-Za-z0-9_-]{10,100}$')
 
 class ProposalIn(BaseModel):
     product_id: str=Field(pattern=r'^\d{1,12}$')
     quantity: float=Field(gt=0,le=100000,allow_inf_nan=False)
 
 class ConfirmIn(BaseModel):
-    confirmation_id: str=Field(min_length=10,max_length=100)
+    confirmation_id: str=Field(pattern=r'^[A-Za-z0-9_-]{10,100}$')
     confirmed: StrictBool=False
 
 class CancelIn(BaseModel):
-    confirmation_id: str=Field(min_length=10,max_length=100)
+    confirmation_id: str=Field(pattern=r'^[A-Za-z0-9_-]{10,100}$')
+
+class RemoveAttachmentsIn(BaseModel):
+    attachment_ids: list[str]=Field(max_length=8)
+
+class RemoveCartIn(BaseModel):
+    product_id: str=Field(pattern=r'^\d{1,12}$')
+    confirmed: StrictBool=False
+    version: int=Field(ge=0,strict=True)
 
 def create_app(catalog=None,ai=None):
     catalog=catalog or Catalog(); ai=ai or AI(); sessions={}
@@ -53,7 +66,9 @@ def create_app(catalog=None,ai=None):
 
     @app.exception_handler(AppError)
     async def app_error(request,error):
-        return JSONResponse({'error':{'code':error.code,'message':error.message}},status_code=error.status)
+        current=sessions.get(request.cookies.get('ekt_session'))
+        text=localize_text(error.message,current.language if current else 'ru')
+        return JSONResponse({'error':{'code':error.code,'message':text}},status_code=error.status)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request,error):
@@ -85,7 +100,7 @@ def create_app(catalog=None,ai=None):
             s=Session(); sessions[s.id]=s
         s.touched=current
         if request.method=='POST':
-            if not secrets.compare_digest(request.headers.get('x-csrf-token',''),s.csrf):
+            if not secrets.compare_digest(request.headers.get('x-csrf-token','').encode('utf-8'),s.csrf.encode('utf-8')):
                 raise AppError('csrf','Сессия не подтверждена. Обновите страницу.',403)
             s.limit()
         return s
@@ -107,7 +122,7 @@ def create_app(catalog=None,ai=None):
     @app.get('/api/session')
     async def get_session(request:Request):
         s=session(request,True)
-        response=JSONResponse({'session_id':s.id,'csrf_token':s.csrf,'cart':s.cart(),'integrations':integrations()})
+        response=JSONResponse(localize_response({'session_id':s.id,'csrf_token':s.csrf,'cart':s.cart(),'integrations':integrations()},s.language))
         response.set_cookie('ekt_session',s.id,httponly=True,samesite='lax',secure=os.getenv('EKT_SECURE_COOKIE','false').lower()=='true',max_age=7200)
         return response
 
@@ -125,24 +140,40 @@ def create_app(catalog=None,ai=None):
     async def detail(pid:str): return await catalog.detail(pid,fresh=catalog.live)
 
     @app.get('/api/cart')
-    async def get_cart(request:Request): return session(request).cart()
+    async def get_cart(request:Request):
+        s=session(request)
+        return localize_response({'cart':s.cart()},s.language)['cart']
 
     @app.post('/api/cart/propose')
     async def cart_propose(body:ProposalIn,request:Request):
         s=session(request)
-        async with s.lock: return {'proposal':await propose(s,catalog,body.product_id,body.quantity),'cart':s.cart()}
+        async with s.lock: return localize_response({'proposal':await propose(s,catalog,body.product_id,body.quantity),'cart':s.cart()},s.language)
 
     @app.post('/api/cart/confirm')
     async def cart_confirm(body:ConfirmIn,request:Request):
         s=session(request)
-        async with s.lock: return await confirm(s,catalog,body.confirmation_id,body.confirmed)
+        async with s.lock: return localize_response(await confirm(s,catalog,body.confirmation_id,body.confirmed),s.language)
 
     @app.post('/api/cart/cancel')
     async def cart_cancel(body:CancelIn,request:Request):
         s=session(request)
         async with s.lock:
             if s.pending and secrets.compare_digest(s.pending['proposal']['confirmation_id'],body.confirmation_id): s.pending=None
-            return {'cart':s.cart()}
+            return localize_response({'cart':s.cart()},s.language)
+
+    @app.post('/api/cart/remove')
+    async def cart_remove(body:RemoveCartIn,request:Request):
+        s=session(request)
+        async with s.lock:
+            if body.confirmed is not True:
+                raise AppError('confirmation_required','Подтвердите удаление товара из корзины.',403)
+            # A retry is harmless, and a stale view cannot delete a re-added item.
+            if body.product_id not in s.items: return localize_response({'cart':s.cart()},s.language)
+            if body.version!=s.version:
+                raise AppError('cart_changed','Корзина изменилась. Обновите её и повторите удаление.',409)
+            del s.items[body.product_id]
+            s.version+=1; s.pending=None
+            return localize_response({'cart':s.cart()},s.language)
 
     @app.post('/api/attachments')
     async def attach(request:Request):
@@ -171,27 +202,61 @@ def create_app(catalog=None,ai=None):
             s.attachments[aid]=attachment
             return {'attachment_id':aid,**{k:v for k,v in attachment.items() if k!='image'}}
 
+    @app.post('/api/attachments/remove')
+    async def remove_attachments(body:RemoveAttachmentsIn,request:Request):
+        s=session(request)
+        async with s.lock:
+            # Only this session's pending uploads are affected; repeated removal is safe.
+            for aid in body.attachment_ids: s.attachments.pop(aid,None)
+            return {'removed':True}
+
+    @app.post('/api/chat/reset')
+    async def reset_chat(request:Request):
+        s=session(request)
+        async with s.lock:
+            s.history.clear(); s.last_products.clear(); s.attachments.clear(); s.pending=None
+            s.chat_receipts.clear()
+            return localize_response({'cart':s.cart()},s.language)
+
     @app.post('/api/chat')
     async def chat(body:ChatIn,request:Request):
         s=session(request)
         async with s.lock:
             message=body.message.strip()
             if not message: raise AppError('invalid_request','Напишите вопрос о товаре.')
+            fingerprint=hashlib.sha256(json.dumps([message,body.attachment_ids],ensure_ascii=False).encode()).hexdigest()
+            cached=s.chat_receipts.get(body.request_id)
+            if cached:
+                if cached['fingerprint']!=fingerprint:
+                    raise AppError('request_conflict','Этот идентификатор уже использован для другого сообщения.',409)
+                response=copy.deepcopy(cached['response'])
+                response['cart']=localize_response({'cart':s.cart()},s.language)['cart']
+                if response['proposal'] and (not s.pending or s.pending['proposal']['confirmation_id']!=response['proposal']['confirmation_id']):
+                    response['proposal']=None
+                return response
+            s.language=detect_language(message,s.language)
+            command=normalize_command(message)
             for aid in body.attachment_ids:
                 if aid not in s.attachments: raise AppError('not_found','Вложение не найдено в этой сессии.',404)
             def respond(text='',products=None,proposal=None,sources=None,warnings=None):
+                response=localize_response(chat_result(s,text,products,proposal,sources,warnings),s.language)
                 # Record completed exchanges, including deterministic cart replies, exactly as displayed.
-                s.history.extend([{'role':'user','text':message},{'role':'assistant','text':text}])
+                s.history.extend([{'role':'user','text':message},{'role':'assistant','text':response['text']}])
                 s.history=s.history[-12:]
-                return chat_result(s,text,products,proposal,sources,warnings)
-            affirmative=re.fullmatch(r'(?:да[,!\s]+)?добавь(?:те)?[.!\s]*',message,re.I)
+                # The UI consumes uploads after a successful answer. Failed requests retain them for retry.
+                for aid in body.attachment_ids: s.attachments.pop(aid,None)
+                if body.request_id:
+                    s.chat_receipts[body.request_id]={'fingerprint':fingerprint,'response':copy.deepcopy(response)}
+                    if len(s.chat_receipts)>32: s.chat_receipts.pop(next(iter(s.chat_receipts)))
+                return response
+            affirmative=re.fullmatch(r'(?:да[,!\s]+)?добавь(?:те)?[.!\s]*',command,re.I)
             if affirmative and s.pending and not body.attachment_ids:
                 result=await confirm(s,catalog,s.pending['proposal']['confirmation_id'],True)
                 return respond(result['text'])
             s.pending=None  # A new request supersedes any previous quote, including refusal.
-            if re.fullmatch(r'(?:нет|отмена|не добавляй|не добавлять)[.!\s]*',message,re.I):
+            if re.fullmatch(r'(?:нет|отмена|не добавляй|не добавлять)[.!\s]*',command,re.I):
                 return respond('Добавление отменено. Корзина не изменилась.')
-            if re.fullmatch(r'(?:показать |покажи |открыть |открой )?корзин[ау][.!\s]*',message,re.I):
+            if re.fullmatch(r'(?:показать |покажи |открыть |открой )?корзин[ау][.!\s]*',command,re.I):
                 return respond('Откройте демонстрационную корзину по ссылке /cart. '+s.cart()['notice'])
             attachments=[s.attachments[aid] for aid in body.attachment_ids]
             intent,warnings=await ai.interpret(message,s,attachments)

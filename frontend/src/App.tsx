@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type FormEvent,
@@ -70,6 +71,9 @@ type Busy =
   | "cart"
   | "alternatives"
   | "cancel"
+  | "reset"
+  | "remove"
+  | "removeCart"
   | null;
 const operationLabels: Record<Exclude<Busy, null>, string> = {
   chat: "Проверяю каталог и готовлю ответ…",
@@ -79,6 +83,9 @@ const operationLabels: Record<Exclude<Busy, null>, string> = {
   cart: "Обновляю корзину…",
   alternatives: "Подбираю доступные аналоги…",
   cancel: "Отменяю предложение…",
+  reset: "Начинаю новый запрос…",
+  remove: "Убираю вложение…",
+  removeCart: "Удаляю товар из корзины…",
 };
 
 export default function App() {
@@ -88,6 +95,7 @@ export default function App() {
   const [connecting, setConnecting] = useState(true);
   const [busy, setBusy] = useState<Busy>(null);
   const [cart, setCart] = useState<Cart | null>(null);
+  const [cartDialogOpen, setCartDialogOpen] = useState(false);
   const [integrations, setIntegrations] = useState<Integrations | null>(null);
   const [messages, setMessages] = useState<ChatEntry[]>([]);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -98,7 +106,9 @@ export default function App() {
   const fileInput = useRef<HTMLInputElement>(null);
   const cartDialog = useRef<HTMLDialogElement>(null);
   const conversationEnd = useRef<HTMLDivElement>(null);
+  const followSubmittedChat = useRef(false);
   const requestLock = useRef(false);
+  const chatAttempt = useRef<{ payload: string; id: string } | null>(null);
   const isCartPage = window.location.pathname === "/cart";
   const expired =
     !!proposal &&
@@ -131,13 +141,19 @@ export default function App() {
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, [proposal]);
-  useEffect(() => {
-    if (messages.length || busy)
-      conversationEnd.current?.scrollIntoView?.({
-        behavior: "auto",
-        block: "end",
-      });
-  }, [messages.length, busy, proposal?.confirmation_id]);
+  useLayoutEffect(() => {
+    // Only submitting or resetting chat should move the viewport, not unrelated cart work
+    // or rerenders while the user is reading earlier messages.
+    if (!followSubmittedChat.current) return;
+    if (!busy) {
+      followSubmittedChat.current = false;
+      composer.current?.focus({ preventScroll: true });
+    }
+    conversationEnd.current?.scrollIntoView?.({
+      behavior: "auto",
+      block: "end",
+    });
+  }, [messages.length, busy, notice]);
 
   function start(text: string) {
     setDraft(text);
@@ -150,11 +166,13 @@ export default function App() {
       setConnected(false);
       setProposal(null);
       setAttachments([]);
+      chatAttempt.current = null;
     }
   }
   async function run(kind: Exclude<Busy, null>, task: () => Promise<void>) {
     if (requestLock.current || !connected) return;
     requestLock.current = true;
+    if (kind === "chat" || kind === "reset") followSubmittedChat.current = true;
     setBusy(kind);
     setNotice("");
     try {
@@ -197,11 +215,16 @@ export default function App() {
     if ((!draft.trim() && !attachments.length) || disabled) return;
     const text = draft.trim();
     const selected = [...attachments];
+    const payload = JSON.stringify([text, selected.map(file => file.attachment_id)]);
+    if (chatAttempt.current?.payload !== payload)
+      chatAttempt.current = { payload, id: crypto.randomUUID() };
+    const requestId = chatAttempt.current.id;
     if (proposal) setProposalStale(true);
     void run("chat", async () => {
       const response = await api.chat(
         text || "Проверьте товары из приложенного файла.",
         selected.map((file) => file.attachment_id),
+        requestId,
       );
       applyChat(
         response,
@@ -210,6 +233,7 @@ export default function App() {
       );
       setDraft("");
       setAttachments([]);
+      chatAttempt.current = null;
     });
   }
   function propose(product: Product, quantity: number) {
@@ -264,6 +288,16 @@ export default function App() {
       setCart(await api.cart());
     });
   }
+  function removeCartItem(product: Product) {
+    if (!cart) return;
+    const version = cart.version;
+    void run("removeCart", async () => {
+      const result = await api.removeCartItem(product.id, version);
+      setCart(result.cart);
+      setProposal(null);
+      setNotice(`«${product.name}» удалён из корзины.`);
+    });
+  }
   function upload(file: File | undefined) {
     if (!file) return;
     if (file.size > 8 * 1024 * 1024) {
@@ -306,15 +340,22 @@ export default function App() {
     });
   }
   function beginNewQuery() {
-    if (busy) return;
-    if (proposal) {
-      cancelProposal(true);
-      return;
-    }
-    // A new input is not a new server session. Never hide cart or pretend context was reset.
-    start("");
-    setAttachments([]);
-    setProposal(null);
+    void run("reset", async () => {
+      const result = await api.resetChat();
+      setCart(result.cart);
+      setMessages([]);
+      chatAttempt.current = null;
+      setDraft("");
+      setAttachments([]);
+      setProposal(null);
+      setProposalStale(false);
+    });
+  }
+  function removeAttachment(id: string) {
+    void run("remove", async () => {
+      await api.removeAttachments([id]);
+      setAttachments((current) => current.filter(file => file.attachment_id !== id));
+    });
   }
   const connectionLabel = connecting
     ? "Подключение…"
@@ -420,7 +461,10 @@ export default function App() {
             <button
               className="mobile-cart icon-button"
               aria-label={`Открыть корзину, товаров: ${cart?.count ?? 0}`}
-              onClick={() => cartDialog.current?.showModal()}
+              onClick={() => {
+                cartDialog.current?.showModal();
+                setCartDialogOpen(true);
+              }}
             >
               <ShoppingCart size={22} />
               {!!cart?.count && <span>{cart.count}</span>}
@@ -502,6 +546,7 @@ export default function App() {
               cart={cart}
               loading={disabled}
               onRefresh={refreshCart}
+              onRemove={removeCartItem}
               full
             />
           </main>
@@ -658,7 +703,6 @@ export default function App() {
                     {operationLabels[busy]}
                   </div>
                 )}
-                <div ref={conversationEnd} />
               </div>
               <div className="composer-area">
                 {notice && (
@@ -684,14 +728,7 @@ export default function App() {
                         className="remove-file"
                         disabled={!!busy}
                         aria-label={`Убрать файл ${file.name}`}
-                        onClick={() =>
-                          setAttachments((current) =>
-                            current.filter(
-                              (item) =>
-                                item.attachment_id !== file.attachment_id,
-                            ),
-                          )
-                        }
+                        onClick={() => removeAttachment(file.attachment_id)}
                       >
                         <X size={14} />
                       </button>
@@ -776,6 +813,7 @@ export default function App() {
                   Товары попадут в демо-корзину только с вашего согласия.
                 </p>
               </div>
+              <div ref={conversationEnd} aria-hidden="true" />
             </main>
             <aside className="cart-panel" aria-label="Ваш подбор">
               <div className="panel-title">
@@ -792,6 +830,7 @@ export default function App() {
                 cart={cart}
                 loading={disabled}
                 onRefresh={refreshCart}
+                onRemove={removeCartItem}
               />
               <div className="cart-guide">
                 <span className="eyebrow">КАК ЭТО РАБОТАЕТ</span>
@@ -826,7 +865,11 @@ export default function App() {
           </div>
         )}
       </div>
-      <dialog className="cart-dialog" ref={cartDialog}>
+      <dialog
+        className="cart-dialog"
+        ref={cartDialog}
+        onClose={() => setCartDialogOpen(false)}
+      >
         <div className="dialog-heading">
           <h2>Ваша корзина</h2>
           <button
@@ -837,7 +880,17 @@ export default function App() {
             <X size={22} />
           </button>
         </div>
-        <CartContent cart={cart} loading={disabled} onRefresh={refreshCart} />
+        {cartDialogOpen && notice && (
+          <div className="inline-notice" role="alert">
+            {notice}
+            {!connected && !connecting && (
+              <button className="text-button" onClick={() => void connect()}>
+                Подключиться повторно
+              </button>
+            )}
+          </div>
+        )}
+        <CartContent cart={cart} loading={disabled} onRefresh={refreshCart} onRemove={removeCartItem} />
       </dialog>
     </div>
   );

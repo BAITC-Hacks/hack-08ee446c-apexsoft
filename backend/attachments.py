@@ -12,8 +12,9 @@ Image.MAX_IMAGE_PIXELS=20_000_000
 
 def parse_file(name,data):
     if not data or len(data)>MAX_BYTES: raise AppError('attachment_too_large','Размер файла должен быть от 1 байта до 8 МБ.',413)
-    name=Path(name.replace('\\','/')).name[:160]
+    name=Path(name.replace('\\','/')).name
     suffix=Path(name).suffix.lower(); warnings=[]; image=None
+    if len(name)>160: name=name[:max(0,160-len(suffix))]+suffix[:160]
     try:
         if suffix in {'.docx','.xlsx'}:
             with zipfile.ZipFile(io.BytesIO(data)) as archive:
