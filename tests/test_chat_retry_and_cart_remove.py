@@ -122,3 +122,21 @@ def test_remove_is_csrf_protected_and_session_scoped(client):
     assert client.post('/api/cart/remove',json=body).json()['cart']['count'] == 0
     client.cookies = owner_cookies; client.headers['X-CSRF-Token'] = owner_token
     assert client.get('/api/cart').json()['count'] == 2
+
+
+def test_removing_one_product_preserves_another_product_and_its_quantity(client):
+    catalog=client.app.state.catalog
+    catalog.details['900005']={**catalog.details['900002'],'id':900005,
+                              'name':'Другая модель тестового товара','price':2300}
+    add(client)
+    proposal=client.post('/api/cart/propose',json={'product_id':'900005','quantity':3}).json()['proposal']
+    response=client.post('/api/cart/confirm',json={'confirmation_id':proposal['confirmation_id'],'confirmed':True})
+    before=response.json()['cart']
+    assert {item['product']['id'] for item in before['items']}=={'900002','900005'}
+    assert before['count']==5
+    remove={'product_id':'900002','version':before['version'],'confirmed':True}
+    after=client.post('/api/cart/remove',json=remove).json()['cart']
+    assert [item['product']['id'] for item in after['items']]==['900005']
+    assert after['items'][0]['quantity']==3 and after['total']==6900 and after['count']==3
+    assert client.post('/api/cart/remove',json=remove).json()['cart']==after
+    assert client.get('/api/cart').json()==after
