@@ -47,7 +47,8 @@ async function request<T>(
     let data;
     try {
       data = await response.json();
-    } catch {
+    } catch (error) {
+      if (controller.signal.aborted) throw error;
       throw new ApiError(
         "Сервис пока недоступен. Попробуйте подключиться ещё раз.",
         response.status,
@@ -64,7 +65,7 @@ async function request<T>(
     return data as T;
   } catch (error) {
     if (error instanceof ApiError) throw error;
-    if (error instanceof Error && error.name === "AbortError")
+    if (controller.signal.aborted)
       throw new ApiError(
         "Ответ занял слишком много времени. Попробуйте ещё раз.",
         0,
