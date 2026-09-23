@@ -74,6 +74,13 @@ def tokens(text):
         text=text.replace(a,b)
     return re.findall(r'[a-zа-я0-9_]+',text)
 
+def code_pattern(value):
+    # Keep letters/digits of a model, allowing GL1004D and GL 1004D formatting.
+    parts=re.findall(r'[a-zа-я]+|\d+|_+',value)
+    start=r'(?<!\d)' if value[0].isdigit() else r'(?<!\w)'
+    end=r'(?!\d)' if value.isdigit() else r'(?!\w)'
+    return start+r'\s*'.join(re.escape(part) for part in parts)+end
+
 class Catalog:
     def __init__(self):
         user,password=os.getenv('EKT_API_USERNAME'),os.getenv('EKT_API_PASSWORD')
@@ -94,6 +101,8 @@ class Catalog:
         try:
             async with self.gate:
                 r=await self.client.get(path,params=params)
+            if path=='/api/products/detail' and r.status_code==404:
+                raise AppError('not_found','Товар с этим ID не найден в каталоге.',404)
             r.raise_for_status()
             data=r.json()
             if not isinstance(data,dict): raise ValueError('not object')
@@ -132,23 +141,31 @@ class Catalog:
 
     async def search(self,query,limit=6):
         query=query.strip(); ts=[t for t in tokens(query) if t not in {'есть','ли','найди','нужен','нужно','мне','купить','покажи','товар','наличие','сколько','стоит','пожалуйста','для','на','в','и','с','по'}]
-        numeric=re.search(r'(?<!\d)(\d{4,8})(?!\d)',query)
-        scores=[]
+        # Model numbers and ratings (GL 1004D, 4000 К) are not internal catalogue IDs.
+        marked_id=re.search(r'(?<!\w)(?:id|ид|идентификатор)(?:\s+товара)?\s*[:#№]?\s*(\d{1,12})(?!\w)',query,re.I)
+        numeric=marked_id or re.fullmatch(r'(\d{1,12})',query)
+        scores=[]; exact=[]
+        identifiers=[t for t in ts if len(t)>=4 and any(char.isdigit() for char in t)]
         for pid,row in self.rows.items():
             article=str(row.get('article','')).lower(); name=str(row.get('name','')).lower()
-            hay=' '.join(tokens(name+' '+article))
-            score=sum(3 if t in article else 1 for t in ts if t in hay)
-            if article.rstrip('_') and article.rstrip('_') in query.lower(): score+=25
-            if numeric and pid==numeric[1]: score+=30
+            words=tokens(name+' '+article); hay=' '.join(words)
+            article_key=article.rstrip('_')
+            if article_key and re.search(r'(?<![\w-])'+re.escape(article_key)+r'_?(?![\w-])',query.lower()):
+                exact.append(pid)
+            # A model/rating explicitly named by the buyer must occur in a candidate.
+            if any(not re.search(code_pattern(t),hay) for t in identifiers): continue
+            # Short model prefixes such as GL must not match unrelated names such as GLOSSA.
+            score=sum(3 if t in article else 1 for t in ts if
+                      (bool(re.search(code_pattern(t),hay)) if t in identifiers else (t in words if len(t)<4 else t in hay)))
             if score or not query: scores.append((score,pid))
         scores.sort(key=lambda x:-x[0])
-        pids=[pid for _,pid in scores[:limit]]
-        if numeric and numeric[1] not in pids and len(numeric[1])<=6:
+        pids=exact[:limit] or [pid for _,pid in scores[:limit]]
+        if numeric and (marked_id or not exact):
             try:
-                p=await self.detail(numeric[1],fresh=True)
-                return [p]+[await self.detail(pid) for pid in pids[:limit-1]]
+                return [await self.detail(numeric[1],fresh=True)]
             except AppError as e:
-                if e.code=='upstream_unavailable': raise
+                if e.code=='not_found': return []
+                raise
         if self.live and not self.rows:
             message=('Каталог ekt.kz сейчас недоступен. Цена и наличие не подтверждены; повторите запрос позже.'
                      if self.index_error else 'Каталог ещё загружается. Поиск по названию и артикулу пока недоступен; повторите позже или укажите ID товара.')
