@@ -149,6 +149,10 @@ class Catalog:
                 return [p]+[await self.detail(pid) for pid in pids[:limit-1]]
             except AppError as e:
                 if e.code=='upstream_unavailable': raise
+        if self.live and not self.rows:
+            message=('Каталог ekt.kz сейчас недоступен. Цена и наличие не подтверждены; повторите запрос позже.'
+                     if self.index_error else 'Каталог ещё загружается. Поиск по названию и артикулу пока недоступен; повторите позже или укажите ID товара.')
+            raise AppError('upstream_unavailable',message,503)
         out=[]
         for pid in pids:
             try: out.append(await self.detail(pid))
