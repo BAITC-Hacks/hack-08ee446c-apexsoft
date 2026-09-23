@@ -22,6 +22,8 @@ let confirmStatus: number;
 let chatFails: boolean;
 let cancelFails: boolean;
 let confirmWait: Promise<void> | null;
+let chatWait: Promise<void> | null;
+const scrollIntoView = vi.fn();
 
 beforeEach(() => {
   window.history.replaceState({}, "", "/");
@@ -31,6 +33,11 @@ beforeEach(() => {
   chatFails = false;
   cancelFails = false;
   confirmWait = null;
+  chatWait = null;
+  Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+    configurable: true,
+    value: scrollIntoView,
+  });
   vi.stubGlobal(
     "fetch",
     vi.fn(async (path: string, options?: RequestInit) => {
@@ -42,6 +49,7 @@ beforeEach(() => {
           cart: emptyCart,
           integrations,
         });
+      if (path === "/api/chat" && chatWait) await chatWait;
       if (path === "/api/chat")
         return chatFails
           ? json(
@@ -124,6 +132,69 @@ async function propose() {
   await screen.findByRole("button", { name: "Да, добавить 2" });
   return user;
 }
+
+describe("chat scrolling and focus", () => {
+  it.each([false, true])(
+    "keeps the composer in view during sending and after a reply (failure: %s)",
+    async (fails) => {
+      chatFails = fails;
+      let finish!: () => void;
+      chatWait = new Promise((resolve) => {
+        finish = resolve;
+      });
+      const user = userEvent.setup();
+      render(<App />);
+      const field = screen.getByRole("textbox", {
+        name: "Ваш запрос консультанту",
+      });
+      await user.type(field, "Проверить кабель");
+      const send = screen.getByRole("button", { name: "Отправить сообщение" });
+      await waitFor(() => expect(send).toBeEnabled());
+      expect(scrollIntoView).not.toHaveBeenCalled();
+      await user.click(send);
+      await screen.findByText("Проверяю каталог и готовлю ответ…");
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      const target = scrollIntoView.mock.contexts[0] as HTMLElement;
+      // The end anchor must include the composer and its error area, not stop
+      // above them and leave the next action below the viewport.
+      expect(
+        field.compareDocumentPosition(target) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      expect(scrollIntoView).toHaveBeenLastCalledWith({
+        behavior: "auto",
+        block: "end",
+      });
+      const focus = vi.spyOn(field, "focus");
+      finish();
+      await screen.findByText(
+        fails ? "Каталог временно недоступен." : "Найден тестовый товар.",
+      );
+      await waitFor(() => expect(field).toHaveFocus());
+      expect(field).toBeEnabled();
+      expect(field).toHaveValue(fails ? "Проверить кабель" : "");
+      expect(focus).toHaveBeenLastCalledWith({ preventScroll: true });
+      expect(scrollIntoView).toHaveBeenCalledTimes(2);
+      expect(scrollIntoView.mock.contexts[1]).toBe(target);
+      focus.mockRestore();
+    },
+  );
+
+  it("does not pull readers to the bottom when editing or refreshing the cart", async () => {
+    const user = await search();
+    scrollIntoView.mockClear();
+    await user.type(
+      screen.getByRole("textbox", { name: "Ваш запрос консультанту" }),
+      "Следующий вопрос",
+    );
+    const refresh = within(
+      screen.getByRole("complementary", { name: "Ваш подбор" }),
+    ).getByRole("button", { name: "Обновить корзину" });
+    await user.click(refresh);
+    await screen.findByRole("heading", { name: "Корзина 2" });
+    expect(scrollIntoView).not.toHaveBeenCalled();
+    expect(refresh).toHaveFocus();
+  });
+});
 
 describe("explicit cart consent and honest data", () => {
   it("does not confirm during search or proposal; confirms only after the explicit button, with CSRF and cookie", async () => {

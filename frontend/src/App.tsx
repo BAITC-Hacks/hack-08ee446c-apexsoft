@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type FormEvent,
@@ -98,6 +99,7 @@ export default function App() {
   const fileInput = useRef<HTMLInputElement>(null);
   const cartDialog = useRef<HTMLDialogElement>(null);
   const conversationEnd = useRef<HTMLDivElement>(null);
+  const followSubmittedChat = useRef(false);
   const requestLock = useRef(false);
   const isCartPage = window.location.pathname === "/cart";
   const expired =
@@ -131,13 +133,19 @@ export default function App() {
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, [proposal]);
-  useEffect(() => {
-    if (messages.length || busy)
-      conversationEnd.current?.scrollIntoView?.({
-        behavior: "auto",
-        block: "end",
-      });
-  }, [messages.length, busy, proposal?.confirmation_id]);
+  useLayoutEffect(() => {
+    // Only a submitted chat should move the viewport, not unrelated cart work
+    // or rerenders while the user is reading earlier messages.
+    if (!followSubmittedChat.current) return;
+    if (!busy) {
+      followSubmittedChat.current = false;
+      composer.current?.focus({ preventScroll: true });
+    }
+    conversationEnd.current?.scrollIntoView?.({
+      behavior: "auto",
+      block: "end",
+    });
+  }, [messages.length, busy, notice]);
 
   function start(text: string) {
     setDraft(text);
@@ -155,6 +163,7 @@ export default function App() {
   async function run(kind: Exclude<Busy, null>, task: () => Promise<void>) {
     if (requestLock.current || !connected) return;
     requestLock.current = true;
+    if (kind === "chat") followSubmittedChat.current = true;
     setBusy(kind);
     setNotice("");
     try {
@@ -658,7 +667,6 @@ export default function App() {
                     {operationLabels[busy]}
                   </div>
                 )}
-                <div ref={conversationEnd} />
               </div>
               <div className="composer-area">
                 {notice && (
@@ -776,6 +784,7 @@ export default function App() {
                   Товары попадут в демо-корзину только с вашего согласия.
                 </p>
               </div>
+              <div ref={conversationEnd} aria-hidden="true" />
             </main>
             <aside className="cart-panel" aria-label="Ваш подбор">
               <div className="panel-title">
