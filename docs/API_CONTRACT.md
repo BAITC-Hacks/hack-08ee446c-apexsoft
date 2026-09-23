@@ -22,12 +22,13 @@ ChatResponse: {message_id:string, text:string, products:Product[], proposal:Prop
 
 - GET /api/health → {status:'ok',integrations}.
 - GET /api/session → тип выше.
-- POST /api/chat JSON {message:string,attachment_ids?:string[]} → ChatResponse. attachment_ids получены в той же сессии. Точное «да, добавь» при текущем предложении подтверждает его; любое другое сообщение не означает подтверждения.
+- POST /api/chat JSON {message:string,attachment_ids?:string[]} → ChatResponse. message: 1–3000 символов, до 4 attachment_ids из той же сессии. Точное «да, добавь» при текущем предложении подтверждает его; любое другое сообщение не означает подтверждения.
 - GET /api/products?q=... → {products:Product[],index_complete:boolean} (до 6 результатов).
 - GET /api/products/{id} → Product.
 - GET /api/products/{id}/alternatives → {products:Product[],warnings:string[]}.
 - POST /api/cart/propose JSON {product_id:string,quantity:number} → {proposal:Proposal,cart:Cart}. quantity = ДОБАВИТЬ к текущему количеству. Свежие цена/остаток; сервер проверяет кратность/наличие.
 - POST /api/cart/confirm JSON {confirmation_id:string,confirmed:true} → {cart:Cart,text:string}. Одноразовое подтверждение, повтор возвращает прежний результат без повторного добавления. Свежие остаток и цена перепроверяются, при изменениях 409 и требуется новое предложение. Идентификатор привязан к сессии.
+- POST /api/cart/cancel JSON {confirmation_id:string} → {cart:Cart}. Аннулирует текущее предложение этой сессии, если идентификатор совпадает. Не меняет состав корзины; повтор безопасен.
 - GET /api/cart → Cart. Маршрут UI /cart отображает актуальную корзину этой сессии. Заказ/оплата не реализованы и реальную корзину ekt.kz не изменяют.
 - POST /api/attachments multipart file → {attachment_id:string,name:string,extracted_text:string,kind:'document'|'image',warnings:string[]}. JPEG/PNG/PDF/DOCX/XLSX/XLS, до 8 MiB; хранятся только в памяти сессии. Изображение распознаёт OpenAI. Legacy .doc возвращает понятную ошибку преобразования в .docx.
 

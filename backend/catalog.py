@@ -105,8 +105,9 @@ class Catalog:
         if not self.live: return
         try:
             max_pages=max(1,min(1000,int(os.getenv('EKT_INDEX_PAGES','100'))))
-            for start in range(1,max_pages+1,4):
-                pages=await asyncio.gather(*(self.request('/api/products',{'page':p}) for p in range(start,min(start+4,max_pages+1))))
+            # Leave capacity for customer requests while the background index loads.
+            for start in range(1,max_pages+1,2):
+                pages=await asyncio.gather(*(self.request('/api/products',{'page':p}) for p in range(start,min(start+2,max_pages+1))))
                 for page in pages:
                     items=page.get('items')
                     if not isinstance(items,list): raise ValueError('invalid items')
