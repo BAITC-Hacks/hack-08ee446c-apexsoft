@@ -79,6 +79,7 @@ it.each([false,true])('resets server conversation, clearing UI only on success (
   } else {
     await waitFor(()=>expect(screen.queryByText(chat.text)).not.toBeInTheDocument());
     expect(field).toHaveValue('');
+    expect(field).toHaveFocus();
     expect(screen.getByRole('link',{name:/Моя корзина\s*2/})).toBeInTheDocument();
   }
 });

@@ -139,7 +139,7 @@ export default function App() {
     return () => clearInterval(timer);
   }, [proposal]);
   useLayoutEffect(() => {
-    // Only a submitted chat should move the viewport, not unrelated cart work
+    // Only submitting or resetting chat should move the viewport, not unrelated cart work
     // or rerenders while the user is reading earlier messages.
     if (!followSubmittedChat.current) return;
     if (!busy) {
@@ -168,7 +168,7 @@ export default function App() {
   async function run(kind: Exclude<Busy, null>, task: () => Promise<void>) {
     if (requestLock.current || !connected) return;
     requestLock.current = true;
-    if (kind === "chat") followSubmittedChat.current = true;
+    if (kind === "chat" || kind === "reset") followSubmittedChat.current = true;
     setBusy(kind);
     setNotice("");
     try {
@@ -328,7 +328,6 @@ export default function App() {
       setAttachments([]);
       setProposal(null);
       setProposalStale(false);
-      composer.current?.focus({ preventScroll: true });
     });
   }
   function removeAttachment(id: string) {
