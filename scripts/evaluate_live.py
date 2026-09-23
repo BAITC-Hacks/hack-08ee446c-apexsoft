@@ -168,7 +168,9 @@ class Evaluator:
 def no_article(e):
     e.chat('Нужен кабель для настольной лампы. Артикула нет, длина два метра.')
     e.chat('Исправляю: длина три метра, а не два. Мощность и сечение не знаю.')
-    e.chat('Какие сведения ещё нужны? Фото маркировки пока нет.')
+    final = e.chat('Какие сведения ещё нужны? Фото маркировки пока нет.')
+    e.check('does_not_request_unavailable_photo', not any(
+        phrase in final['text'].lower() for phrase in ('начать с фото', 'прислать фото')))
 
 
 def numbers(e):

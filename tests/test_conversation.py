@@ -77,6 +77,15 @@ def test_short_answer_has_previous_question_and_unknown_parameters_offer_photo(c
     assert all(post_result['cart']['count'] == 0 for post_result in (first, second, third))
 
 
+def test_clarification_does_not_repeat_connection_as_installation():
+    from backend.clarification import render_clarification
+    reply = render_clarification({'topic': 'cable', 'acknowledgement': 'none',
+                                  'question_keys': ['installation', 'connection', 'length']})
+    assert reply.count('?') == 2
+    assert 'Нужен шнур от розетки' in reply and 'длина' in reply
+    assert 'стационарная прокладка' not in reply
+
+
 def test_clarification_only_renders_allowed_questions(client):
     scripted(client, [choice(questions=['rating', 'INVENTED is in stock', 'rating', 'length', 'installation', 'marking'])])
     reply = post(client, 'Подбери кабель')

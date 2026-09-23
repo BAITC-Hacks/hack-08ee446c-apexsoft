@@ -30,6 +30,8 @@ def render_clarification(value):
     intro = ACKNOWLEDGEMENTS.get(value.get('acknowledgement')) or TOPICS.get(value.get('topic'), TOPICS['general'])
     keys = value.get('question_keys')
     keys = keys if isinstance(keys, list) else []
+    if 'connection' in keys and 'installation' in keys:
+        keys = [key for key in keys if key != 'installation']
     limit = 1 if value.get('acknowledgement') in ACKNOWLEDGEMENTS else 2
     questions = list(dict.fromkeys(QUESTIONS[key] for key in keys if isinstance(key, str) and key in QUESTIONS))[:limit]
     return intro + ' ' + ' '.join(questions or [QUESTIONS['description']])
