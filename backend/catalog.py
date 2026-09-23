@@ -11,6 +11,8 @@ from urllib.parse import urlsplit, unquote
 
 import httpx
 from .errors import AppError
+from .visual import photo_candidate, photo_score
+from .analogue_matching import analogue_reason
 
 DATA = Path(__file__).parent / 'data' / 'catalog_snapshot.json'
 LABELS = {'TORGOVAYA_MARKA':'Бренд','NOMINALNYY_TOK':'Номинальный ток (поле каталога)',
@@ -199,7 +201,7 @@ class Catalog:
         return {'products':products[:limit], 'categories':categories[:24],
                 'indexed_products':len(self.rows), 'index_complete':self.complete}
 
-    async def search(self,query,limit=6,max_price=None):
+    async def search(self,query,limit=6,max_price=None,visual=None):
         if max_price is not None:
             max_price=number(max_price)
             if max_price is None: raise AppError('invalid_request','Укажите корректный бюджет.')
@@ -212,20 +214,43 @@ class Catalog:
         tool_types=(r'\bшуруповерт\w*',r'\bдрел[ьи]\w*',r'\bперфоратор\w*',r'\bболгарк\w*')
         required_types=[pattern for pattern in tool_types if re.search(pattern,' '.join(ts))]
         identifiers=[t for t in ts if len(t)>=4 and any(char.isdigit() for char in t)]
+        wire_word=r'\b(?:провод(?:а|ы|ов|ом|у|е)?|кабел(?:ь|я|и|ей|ем|ю))\b'
+        wire_product=r'\b(?:провод|провода|проводы|кабель|кабели)\b'
+        wire_mark=r'\b(?:ввг[а-яa-z]*|пвс|шввп|пугв)\b'
+        accessory=r'\b(?:маркер\w*|съемник\w*|стриппер\w*|клещ\w*|нож\w*|инструмент\w*|звонок|звонк\w*|наконечник\w*|соединител\w*|держател\w*|зажим\w*|канал\w*|кабельканал\w*|муфт\w*|бирк\w*|(?:ввод|вывод)(?:а|ы|ов|ом)?|сальник\w*)\b'
+        query_name=query.lower().replace('ё','е')
+        wire_match=re.search(wire_word,query_name)
+        accessory_match=re.search(accessory,query_name)
+        wire_requested=bool(wire_match and not (accessory_match and accessory_match.start()<wire_match.start()))
+        generic_wire=wire_requested and not identifiers and all(re.fullmatch(wire_word,t) for t in ts)
         for pid,row in self.rows.items():
+            if visual and not photo_candidate(row,visual): continue
             article=str(row.get('article','')).lower(); name=str(row.get('name','')).lower()
             words=tokens(name+' '+article); hay=' '.join(words)
             article_key=article.rstrip('_')
             if article_key and re.search(r'(?<![\w-])'+re.escape(article_key)+r'_?(?![\w-])',query.lower()):
                 exact.append(pid)
+            if wire_requested:
+                wire_name=name.replace('ё','е')
+                # A cable noun/model is required; "wireless" and cable tools are
+                # not cables. Exact known articles above retain their priority.
+                if re.search(accessory,wire_name) or not (re.search(wire_product,wire_name) or re.search(wire_mark,wire_name)):
+                    continue
             if required_types and not any(re.search(pattern,' '.join(tokens(name))) for pattern in required_types): continue
             # A model/rating explicitly named by the buyer must occur in a candidate.
             if any(not re.search(code_pattern(t),hay) for t in identifiers): continue
             # Short model prefixes such as GL must not match unrelated names such as GLOSSA.
             score=sum(3 if t in article else 1 for t in ts if
                       (bool(re.search(code_pattern(t),hay)) if t in identifiers else (t in words if len(t)<4 else t in hay)))
-            if score or not query: scores.append((score,pid))
-        scores.sort(key=lambda x:-x[0])
+            if wire_requested: score+=1
+            if visual: score+=photo_score(row,visual)
+            if score or not query or visual: scores.append((score,pid))
+        def rank(item):
+            score,pid=item
+            unavailable=0 if (number(self.rows[pid].get('quantity')) or 0)>0 else 1
+            if generic_wire: return (unavailable,-score)
+            return (-score,unavailable if wire_requested else 0)
+        scores.sort(key=rank)
         pids=exact or [pid for _,pid in scores]
         if numeric and (marked_id or not exact):
             try:
@@ -271,15 +296,14 @@ class Catalog:
                 candidates.append((len(shared),rid))
         candidates.sort(reverse=True)
         result=[]
-        critical=('Полюсов','Номинальный ток (поле каталога)','Напряжение','Мощность','Сечение')
-        left={s['name']:s['value'].lower().replace(' ','') for s in target['specifications']}
         for _,rid in candidates[:16]:
-            item=await self.detail(rid,fresh=self.live)
-            if not item['stock'] or any('Расхождение' in w for w in item['warnings']): continue
-            right={s['name']:s['value'].lower().replace(' ','') for s in item['specifications']}
-            if any(k in left and k in right and left[k]!=right[k] for k in critical): continue
-            shared=[k for k in critical if k in left and right.get(k)==left[k]]
-            item['analogue_reason']='Та же категория каталога' + (', совпадают: '+', '.join(shared) if shared else ', близкое наименование') + '. Кандидат на замену: перед монтажом уточните совместимость у специалиста.'
+            try: item=await self.detail(rid,fresh=self.live)
+            except AppError as error:
+                if error.code=='not_found': continue
+                raise
+            reason=analogue_reason(target,item)
+            if not reason: continue
+            item['analogue_reason']=reason
             result.append(item)
             if len(result)==3: break
         warnings=[] if result else ['В доступной выборке не найден подтверждённый подходящий аналог с остатком. Обратитесь к менеджеру; неподходящую замену не предлагаем.']

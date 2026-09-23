@@ -162,8 +162,8 @@ export default function App() {
     return () => clearInterval(timer);
   }, [proposal]);
   useLayoutEffect(() => {
-    // Only submitting or resetting chat should move the viewport, not unrelated cart work
-    // or rerenders while the user is reading earlier messages.
+    // Chat actions, including analogue searches, reveal their progress and result.
+    // Unrelated cart work and rerenders must not move readers of earlier messages.
     if (!followSubmittedChat.current) return;
     if (!busy) {
       followSubmittedChat.current = false;
@@ -204,7 +204,8 @@ export default function App() {
   async function run(kind: Exclude<Busy, null>, task: () => Promise<void>) {
     if (requestLock.current || !connected) return;
     requestLock.current = true;
-    if (kind === "chat" || kind === "reset") followSubmittedChat.current = true;
+    if (kind === "chat" || kind === "reset" || kind === "alternatives")
+      followSubmittedChat.current = true;
     setBusy(kind);
     setNotice("");
     try {

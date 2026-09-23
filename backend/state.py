@@ -23,6 +23,7 @@ class Session:
     history: list=field(default_factory=list)
     last_products: list=field(default_factory=list)
     last_search_query: str=''
+    last_visual: dict|None=None
     search_max_price: float|None=None
     language: str='ru'
     calls: list=field(default_factory=list)
