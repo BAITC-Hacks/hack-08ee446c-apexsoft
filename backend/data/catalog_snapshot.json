@@ -1,0 +1,11 @@
+{
+  "kind": "synthetic",
+  "captured_at": "2026-09-23T08:00:00Z",
+  "items": [],
+  "details": [
+    {"id":900001,"article":"DEMO-LAMP-10W","name":"ДЕМО: лампа LED E27 10W 4000K","description":"Синтетический товар для проверки отсутствия и подбора аналога.","price":1000,"quantity":0,"url":"https://ekt.kz/catalog/demo-lamps/lamp-a/","stores":[],"properties":{"MOSHCHNOST":"10W","NOMINALNOE_NAPRYAZHENIE":"230В","KRATNOST_MIN":"1"}},
+    {"id":900002,"article":"DEMO-LAMP-10W-B","name":"ДЕМО: лампа LED E27 10W 4000K вариант B","description":"Синтетический аналог, не реальная позиция магазина.","price":1200,"quantity":12,"url":"https://ekt.kz/catalog/demo-lamps/lamp-b/","stores":[{"name":"Демо-склад","quantity":12}],"properties":{"MOSHCHNOST":"10W","NOMINALNOE_NAPRYAZHENIE":"230В","KRATNOST_MIN":"1"}},
+    {"id":900003,"article":"DEMO-CABLE","name":"ДЕМО: кабель 3x2.5","description":"Синтетическая позиция с кратностью 5 единиц.","price":450,"quantity":25,"url":"https://ekt.kz/catalog/demo-cables/cable/","stores":[{"name":"Демо-склад","quantity":25}],"properties":{"SECHENIE":"2.5","KRATNOST_MIN":"5"}},
+    {"id":900004,"article":"DEMO-UNKNOWN","name":"ДЕМО: позиция с неизвестной ценой и остатком","price":null,"quantity":null,"url":"https://ekt.kz/catalog/demo/unknown/","properties":{}}
+  ]
+}
