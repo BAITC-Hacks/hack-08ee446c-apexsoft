@@ -217,11 +217,13 @@ class Catalog:
         wire_word=r'\b(?:провод(?:а|ы|ов|ом|у|е)?|кабел(?:ь|я|и|ей|ем|ю))\b'
         wire_product=r'\b(?:провод|провода|проводы|кабель|кабели)\b'
         wire_mark=r'\b(?:ввг[а-яa-z]*|пвс|шввп|пугв)\b'
+        other_product=r'\b(?:прожектор\w*|светильник\w*|ламп\w*|розетк\w*|фонар\w*|удлинител\w*|переноск\w*|шуруповерт\w*|дрел\w*|насос\w*|вентилятор\w*|датчик\w*|нагревател\w*)\b'
         accessory=r'\b(?:маркер\w*|съемник\w*|стриппер\w*|клещ\w*|нож\w*|инструмент\w*|звонок|звонк\w*|наконечник\w*|соединител\w*|держател\w*|зажим\w*|канал\w*|кабельканал\w*|муфт\w*|бирк\w*|(?:ввод|вывод)(?:а|ы|ов|ом)?|сальник\w*)\b'
         query_name=query.lower().replace('ё','е')
         wire_match=re.search(wire_word,query_name)
         accessory_match=re.search(accessory,query_name)
-        wire_requested=bool(wire_match and not (accessory_match and accessory_match.start()<wire_match.start()))
+        other_match=re.search(other_product,query_name)
+        wire_requested=bool(wire_match and not any(match and match.start()<wire_match.start() for match in (accessory_match,other_match)))
         generic_wire=wire_requested and not identifiers and all(re.fullmatch(wire_word,t) for t in ts)
         for pid,row in self.rows.items():
             if visual and not photo_candidate(row,visual): continue
@@ -234,7 +236,10 @@ class Catalog:
                 wire_name=name.replace('ё','е')
                 # A cable noun/model is required; "wireless" and cable tools are
                 # not cables. Exact known articles above retain their priority.
-                if re.search(accessory,wire_name) or not (re.search(wire_product,wire_name) or re.search(wire_mark,wire_name)):
+                cable_matches=[match for pattern in (wire_product,wire_mark) if (match:=re.search(pattern,wire_name))]
+                primary=re.search(other_product,wire_name)
+                if (re.search(accessory,wire_name) or not cable_matches
+                        or primary and primary.start()<min(match.start() for match in cable_matches)):
                     continue
             if required_types and not any(re.search(pattern,' '.join(tokens(name))) for pattern in required_types): continue
             # A model/rating explicitly named by the buyer must occur in a candidate.

@@ -71,3 +71,20 @@ def test_specific_wire_relevance_is_not_sacrificed_for_stock(monkeypatch):
         {'name': 'Провод медный ПВС', 'quantity': 0},
         {'name': 'Провод алюминиевый', 'quantity': 50}])
     assert [p['id'] for p in products] == ['1', '2']
+
+
+def test_devices_with_bundled_cable_are_not_offered_as_wire(monkeypatch):
+    rows = [{'name': name, 'quantity': 2} for name in [
+        'Прожектор THORSMAN IMT33094 с 2м кабель',
+        'Прожектор THORSMAN IMT33107 с 3м кабель',
+        'Светильник LED с кабель 2м', 'Лампа настольная провод 1м',
+        'Розетка кабель 3м', 'Фонарь переносной провод 5м',
+        'Кабель для прожектора ПВС 3х1.5']]
+    assert [p['id'] for p in search(monkeypatch, 'Есть провод?', rows)] == ['7']
+
+
+@pytest.mark.parametrize('query', ['Провод IMT33094', 'ID: 1'])
+def test_exact_floodlight_article_or_id_still_bypasses_wire_filter(monkeypatch, query):
+    rows = [{'name': 'Прожектор THORSMAN с 2м кабель', 'article': 'IMT33094', 'quantity': 2},
+            {'name': 'Кабель ПВС', 'article': 'PVS-10', 'quantity': 10}]
+    assert [p['id'] for p in search(monkeypatch, query, rows)] == ['1']
