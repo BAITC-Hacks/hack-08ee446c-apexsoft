@@ -22,14 +22,15 @@ ChatResponse: {message_id:string, text:string, products:Product[], proposal:Prop
 
 - GET /api/health → {status:'ok',integrations}.
 - GET /api/session → тип выше.
-- POST /api/chat JSON {message:string,attachment_ids?:string[]} → ChatResponse. message: 1–3000 символов, до 4 attachment_ids из той же сессии. Точное «да, добавь» при текущем предложении подтверждает его; любое другое сообщение не означает подтверждения.
-- POST /api/chat/reset JSON {} → {cart:Cart}. Сбрасывает историю, найденные товары, предложение и вложения текущей сессии. Корзина и квитанции выполненных подтверждений сохраняются.
+- POST /api/chat JSON {message:string,attachment_ids?:string[],request_id?:string} → ChatResponse. message: 1–3000 символов, до 4 attachment_ids из той же сессии. Клиент удерживает request_id (10–100 ASCII букв, цифр, `_` или `-`) до успешного ответа. Повтор возвращает тот же ответ без повторной обработки вложения/добавления; состояние корзины при этом актуальное. Иной payload с тем же ID — 409. В памяти сессии хранятся последние 32 результата; ошибки не кешируются. Точное «да, добавь» при текущем предложении подтверждает его; любое другое сообщение не означает подтверждения.
+- POST /api/chat/reset JSON {} → {cart:Cart}. Сбрасывает историю, найденные товары, предложение, вложения и кеш ответов чата текущей сессии. Корзина и квитанции выполненных подтверждений сохраняются.
 - GET /api/products?q=... → {products:Product[],index_complete:boolean} (до 6 результатов).
 - GET /api/products/{id} → Product.
 - GET /api/products/{id}/alternatives → {products:Product[],warnings:string[]}.
 - POST /api/cart/propose JSON {product_id:string,quantity:number} → {proposal:Proposal,cart:Cart}. quantity = ДОБАВИТЬ к текущему количеству. Свежие цена/остаток; сервер проверяет кратность/наличие.
 - POST /api/cart/confirm JSON {confirmation_id:string,confirmed:true} → {cart:Cart,text:string}. Одноразовое подтверждение, повтор возвращает прежний результат без повторного добавления. Свежие остаток и цена перепроверяются, при изменениях 409 и требуется новое предложение. Идентификатор привязан к сессии.
 - POST /api/cart/cancel JSON {confirmation_id:string} → {cart:Cart}. Аннулирует текущее предложение этой сессии, если идентификатор совпадает. Не меняет состав корзины; повтор безопасен.
+- POST /api/cart/remove JSON {product_id:string,version:integer,confirmed:true} → {cart:Cart}. Явное нажатие «Удалить [название] из корзины» удаляет всю позицию и пересчитывает итог. CSRF и принадлежность сессии проверяются. Неактуальная версия корзины — 409; повтор при уже отсутствующем товаре безопасен. Удаление аннулирует ожидающее предложение добавления. Квитанция старого подтверждения не возвращает удалённые позиции: её cart отражает актуальное состояние.
 - GET /api/cart → Cart. Маршрут UI /cart отображает актуальную корзину этой сессии. Заказ/оплата не реализованы и реальную корзину ekt.kz не изменяют.
 - POST /api/attachments multipart file → {attachment_id:string,name:string,extracted_text:string,kind:'document'|'image',warnings:string[]}. JPEG/PNG/PDF/DOCX/XLSX/XLS, до 8 MiB; хранятся только в памяти сессии. Изображение распознаёт OpenAI. Legacy .doc возвращает понятную ошибку преобразования в .docx.
 - POST /api/attachments/remove JSON {attachment_ids:string[]} → {removed:true}. До 8 идентификаторов. Освобождает загрузки только текущей сессии, повтор безопасен. Успешный /api/chat также освобождает использованные вложения; при ошибке они остаются доступны для повторного запроса.
