@@ -199,12 +199,18 @@ class Catalog:
         return {'products':products[:limit], 'categories':categories[:24],
                 'indexed_products':len(self.rows), 'index_complete':self.complete}
 
-    async def search(self,query,limit=6):
+    async def search(self,query,limit=6,max_price=None):
+        if max_price is not None:
+            max_price=number(max_price)
+            if max_price is None: raise AppError('invalid_request','Укажите корректный бюджет.')
         query=query.strip(); ts=[t for t in tokens(query) if t not in {'есть','ли','найди','нужен','нужно','мне','купить','покажи','товар','наличие','сколько','стоит','пожалуйста','для','на','в','и','с','по'}]
         # Model numbers and ratings (GL 1004D, 4000 К) are not internal catalogue IDs.
         marked_id=re.search(r'(?<!\w)(?:id|ид|идентификатор)(?:\s+товара)?\s*[:#№]?\s*(\d{1,12})(?!\w)',query,re.I)
         numeric=marked_id or re.fullmatch(r'(\d{1,12})',query)
         scores=[]; exact=[]
+        # A use case ("for home") must not turn a named drill into a home siren.
+        tool_types=(r'\bшуруповерт\w*',r'\bдрел[ьи]\w*',r'\bперфоратор\w*',r'\bболгарк\w*')
+        required_types=[pattern for pattern in tool_types if re.search(pattern,' '.join(ts))]
         identifiers=[t for t in ts if len(t)>=4 and any(char.isdigit() for char in t)]
         for pid,row in self.rows.items():
             article=str(row.get('article','')).lower(); name=str(row.get('name','')).lower()
@@ -212,6 +218,7 @@ class Catalog:
             article_key=article.rstrip('_')
             if article_key and re.search(r'(?<![\w-])'+re.escape(article_key)+r'_?(?![\w-])',query.lower()):
                 exact.append(pid)
+            if required_types and not any(re.search(pattern,' '.join(tokens(name))) for pattern in required_types): continue
             # A model/rating explicitly named by the buyer must occur in a candidate.
             if any(not re.search(code_pattern(t),hay) for t in identifiers): continue
             # Short model prefixes such as GL must not match unrelated names such as GLOSSA.
@@ -219,10 +226,11 @@ class Catalog:
                       (bool(re.search(code_pattern(t),hay)) if t in identifiers else (t in words if len(t)<4 else t in hay)))
             if score or not query: scores.append((score,pid))
         scores.sort(key=lambda x:-x[0])
-        pids=exact[:limit] or [pid for _,pid in scores[:limit]]
+        pids=exact or [pid for _,pid in scores]
         if numeric and (marked_id or not exact):
             try:
-                return [await self.detail(numeric[1],fresh=True)]
+                item=await self.detail(numeric[1],fresh=True)
+                return [item] if max_price is None or item['price'] is not None and item['price']<=max_price else []
             except AppError as e:
                 if e.code=='not_found': return []
                 raise
@@ -230,12 +238,25 @@ class Catalog:
             message=('Каталог ekt.kz сейчас недоступен. Цена и наличие не подтверждены; повторите запрос позже.'
                      if self.index_error else 'Каталог ещё загружается. Поиск по названию и артикулу пока недоступен; повторите позже или укажите ID товара.')
             raise AppError('upstream_unavailable',message,503)
+        if max_price is not None:
+            # Index prices only select candidates; fresh detail is authoritative.
+            # This can reach an affordable match beyond the first six names.
+            def price_bucket(pid):
+                price=number(self.rows[pid].get('price'))
+                return 1 if price is None else (0 if price<=max_price else 2)
+            pids.sort(key=price_bucket)
+        pids=pids[:limit if max_price is None else max(limit*4,24)]
         out=[]
-        for pid in pids:
-            try: out.append(await self.detail(pid))
-            except AppError as e:
-                if e.code=='upstream_unavailable': raise
-        return out
+        for start in range(0,len(pids),limit):
+            results=await asyncio.gather(*(self.detail(pid,fresh=self.live and max_price is not None)
+                for pid in pids[start:start+limit]),return_exceptions=True)
+            for item in results:
+                if isinstance(item,AppError) and item.code=='not_found': continue
+                if isinstance(item,BaseException): raise item
+                if max_price is None or item['price'] is not None and item['price']<=max_price:
+                    out.append(item)
+            if len(out)>=limit: break
+        return out[:limit]
 
     async def alternatives(self,pid):
         target=await self.detail(pid,fresh=self.live)

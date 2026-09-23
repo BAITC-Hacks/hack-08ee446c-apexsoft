@@ -143,3 +143,50 @@ def test_index_failure_preserves_loaded_products_without_false_completion(monkey
         await catalog.index()
         assert set(catalog.rows)=={'1','2'} and not catalog.complete and catalog.index_error
     run_catalog(monkeypatch,scenario,upstream)
+
+
+def test_named_tool_for_home_does_not_return_home_sirens(monkeypatch):
+    rows={'1':row(1,'Дрель-шуруповерт TEST'), '2':row(2,'Сирена домашняя')}
+    async def upstream(request):
+        return httpx.Response(200,json=rows[request.url.params['id']])
+    async def scenario(catalog):
+        catalog.rows=rows
+        assert [p['id'] for p in await catalog.search('шуруповёрт для дома')]==['1']
+    run_catalog(monkeypatch,scenario,upstream)
+
+
+def test_budget_reaches_affordable_candidate_beyond_first_six_names(monkeypatch):
+    rows={str(i):row(i,'Дрель-шуруповерт TEST',price=80000 if i<8 else 30000) for i in range(1,9)}
+    calls=[]
+    async def upstream(request):
+        pid=request.url.params['id'];calls.append(pid)
+        return httpx.Response(200,json=rows[pid])
+    async def scenario(catalog):
+        catalog.rows=rows
+        products=await catalog.search('шуруповерт',max_price=50000)
+        assert [p['id'] for p in products]==['8']
+        assert calls[0]=='8'
+    run_catalog(monkeypatch,scenario,upstream)
+
+
+@pytest.mark.parametrize('actual_price',[60000,None])
+def test_budget_never_trusts_stale_or_unknown_detail_price(monkeypatch,actual_price):
+    async def upstream(request):
+        return httpx.Response(200,json=row(1,'Дрель-шуруповерт TEST',price=actual_price))
+    async def scenario(catalog):
+        catalog.rows={'1':row(1,'Дрель-шуруповерт TEST',price=10000)}
+        catalog.details=dict(catalog.rows)
+        # A freshly cached old card still must be rechecked for budget selection.
+        import time
+        catalog.checked_clock['1']=time.monotonic()
+        assert await catalog.search('шуруповерт',max_price=50000)==[]
+    run_catalog(monkeypatch,scenario,upstream)
+
+
+def test_explicit_id_respects_budget_without_changing_id_semantics(monkeypatch):
+    async def upstream(request):
+        return httpx.Response(200,json=row(1,'Дрель-шуруповерт TEST',price=60000))
+    async def scenario(catalog):
+        assert await catalog.search('ID:1',max_price=50000)==[]
+        assert [p['id'] for p in await catalog.search('ID:1')]==['1']
+    run_catalog(monkeypatch,scenario,upstream)
