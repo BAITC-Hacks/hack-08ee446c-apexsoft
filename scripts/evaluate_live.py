@@ -171,6 +171,8 @@ def no_article(e):
     final = e.chat('Какие сведения ещё нужны? Фото маркировки пока нет.')
     e.check('does_not_request_unavailable_photo', not any(
         phrase in final['text'].lower() for phrase in ('начать с фото', 'прислать фото')))
+    e.check('does_not_repeat_unknown_rating_or_cross_section', not any(
+        phrase in final['text'].lower() for phrase in ('мощност', 'сечени')))
 
 
 def numbers(e):

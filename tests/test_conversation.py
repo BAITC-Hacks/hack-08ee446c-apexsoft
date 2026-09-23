@@ -86,6 +86,35 @@ def test_clarification_does_not_repeat_connection_as_installation():
     assert 'стационарная прокладка' not in reply
 
 
+def test_model_cannot_repeat_explicitly_unavailable_photo_or_parameters(client):
+    ai = client.app.state.ai
+    ai.key = 'test-only'
+    ai.client = httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(200, json={
+        'output': [{'content': [{'type': 'output_text', 'text': json.dumps(choice(
+            questions=['rating', 'cable_spec', 'marking', 'connection'], acknowledgement='unknown_parameters'))}]}]})))
+    state = next(iter(client.app.state.sessions.values()))
+    state.history = [{'role': 'user', 'text': 'Мощность и сечение не знаю.'},
+                     {'role': 'assistant', 'text': 'Можете прислать фото?'}]
+    result = post(client, 'Фото маркировки пока нет.')
+    assert 'Нужен шнур' in result['text']
+    assert not any(word in result['text'].lower() for word in ('фото', 'мощност', 'сечени'))
+    assert result['cart']['count'] == 0 and result['proposal'] is None
+
+
+def test_guard_does_not_treat_assistant_words_as_user_facts():
+    from backend.clarification import respect_unavailable_parameters
+    parsed = choice(questions=['rating', 'marking'])
+    history = [{'role': 'assistant', 'text': 'Если фото нет и мощность не знаю...'}]
+    assert respect_unavailable_parameters(parsed, 'Продолжим', history) == parsed
+
+
+def test_known_cable_application_is_not_asked_again():
+    from backend.clarification import respect_unavailable_parameters, render_clarification
+    result = respect_unavailable_parameters(choice(questions=['application']),
+                                             'Нужен кабель для настольной лампы. Артикула нет.', [])
+    assert 'Нужен шнур от розетки' in render_clarification(result['clarification'])
+
+
 def test_clarification_only_renders_allowed_questions(client):
     scripted(client, [choice(questions=['rating', 'INVENTED is in stock', 'rating', 'length', 'installation', 'marking'])])
     reply = post(client, 'Подбери кабель')

@@ -4,7 +4,7 @@ import math
 import os
 import re
 import httpx
-from .clarification import TOPICS, QUESTIONS, ACKNOWLEDGEMENTS
+from .clarification import TOPICS, QUESTIONS, ACKNOWLEDGEMENTS, respect_unavailable_parameters
 
 SCHEMA={'type':'object','additionalProperties':False,'properties':{
  'intent':{'type':'string','enum':['search','detail','alternatives','add','terms','clarify','other']},
@@ -85,7 +85,7 @@ class AI:
         self.client=httpx.AsyncClient(timeout=18,follow_redirects=False)
 
     async def interpret(self,message,session,attachments):
-        fallback=self.fallback(message,session)
+        fallback=respect_unavailable_parameters(self.fallback(message,session),message,session.history)
         if not self.key:
             return fallback,['OpenAI не настроен: работает ограниченный поиск по тексту/артикулу.']
         content=[{'type':'input_text','text':json.dumps({
@@ -104,7 +104,7 @@ class AI:
             text=''.join(c.get('text','') for out in body.get('output',[]) for c in out.get('content',[]) if c.get('type')=='output_text')
             result=json.loads(text)
             if not valid_intent(result): raise ValueError('Invalid intent response')
-            return result,[]
+            return respect_unavailable_parameters(result,message,session.history),[]
         except (httpx.HTTPError,ValueError,KeyError,TypeError,AttributeError):
             return fallback,['OpenAI не ответил. Использован ограниченный поиск; содержимое фото не распознано.']
 
