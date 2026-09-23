@@ -15,8 +15,10 @@ def detect_language(message, previous='ru'):
     text=message.casefold()
     if re.search(r'на русском|по-русски|орысша',text): return 'ru'
     if re.search(r'на казахском|по-казахски|[әғқңөұүһі]',text): return 'kk'
-    if re.search(r'\b(?:себет|тауар|керек|бар ма|дана|сатып|рахмет|салем|сәлем)\b',text): return 'kk'
-    if re.search(r'\b(?:найди|покажи|добавь|нужен|нужно|нет|привет|доставка|оплата|спасибо|отмена)\b',text): return 'ru'
+    if re.search(r'\b(?:себет|тауар\w*|керек|бар ма|дана|сатып|рахмет|салем|сәлем|менде|бар)\b',text): return 'kk'
+    # Any ordinary Russian phrase must be able to leave a previous Kazakh turn.
+    # Keep language only for neutral numeric/model references and short neutral acknowledgements.
+    if re.search(r'[а-яё]',text) and not re.fullmatch(r'\s*(?:ок|окей)[.!\s]*',text): return 'ru'
     return previous if previous in {'ru','kk'} else 'ru'
 
 
@@ -118,6 +120,7 @@ TEXT={
     'Подтвердите удаление товара из корзины.':'Тауарды себеттен жоюды растаңыз.',
     'Корзина изменилась. Обновите её и повторите удаление.':'Себет өзгерді. Оны жаңартып, жоюды қайталаңыз.',
     'Этот идентификатор уже использован для другого сообщения.':'Бұл идентификатор басқа хабарлама үшін қолданылған.',
+    'Вот примеры товаров из доступного каталога. Напишите, какой товар или задача вас интересует.':'Міне, қолжетімді каталогтағы тауарлардың мысалдары. Қандай тауар немесе міндет қызықтыратынын жазыңыз.',
 }
 
 

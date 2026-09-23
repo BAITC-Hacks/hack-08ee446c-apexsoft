@@ -24,6 +24,7 @@ from .errors import AppError
 from .knowledge import SOURCES, TERMS
 from .state import Session, propose, confirm
 from .language import detect_language, localize_response, localize_text, normalize_command
+from .browsing import is_overview
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -215,6 +216,7 @@ def create_app(catalog=None,ai=None):
         s=session(request)
         async with s.lock:
             s.history.clear(); s.last_products.clear(); s.attachments.clear(); s.pending=None
+            s.last_search_query=''
             s.chat_receipts.clear()
             return localize_response({'cart':s.cart()},s.language)
 
@@ -259,17 +261,30 @@ def create_app(catalog=None,ai=None):
             if re.fullmatch(r'(?:показать |покажи |открыть |открой )?корзин[ау][.!\s]*',command,re.I):
                 return respond('Откройте демонстрационную корзину по ссылке /cart. '+s.cart()['notice'])
             attachments=[s.attachments[aid] for aid in body.attachment_ids]
-            intent,warnings=await ai.interpret(message,s,attachments)
+            if is_overview(message) and not attachments:
+                query='' if re.search(r'весь|вообще',message,re.I) else s.last_search_query
+                intent={'intent':'search' if query else 'overview','query':query,'product_id':None,'quantity':None}
+                warnings=[]
+            else:
+                intent,warnings=await ai.interpret(message,s,attachments)
             if any(a['kind']=='image' for a in attachments) and (not ai.key or warnings):
                 return respond('Фото не удалось распознать. Напишите маркировку или артикул текстом.',warnings=warnings)
             action=intent['intent']; pid=intent.get('product_id'); query=intent.get('query') or message
             if action=='terms': return respond(TERMS,sources=SOURCES,warnings=warnings)
+            if action=='overview':
+                products=await catalog.search('')
+                s.last_products=products; s.last_search_query=''
+                if not catalog.complete: warnings.append('Поиск охватывает загруженную выборку, не весь каталог. Точное наличие проверяется по карточке.')
+                return respond('Вот примеры товаров из доступного каталога. Напишите, какой товар или задача вас интересует.',products,
+                    sources=[{'title':p['name'],'url':p['product_url']} for p in products if p.get('product_url')],warnings=warnings)
             if action=='clarify': return respond(render_clarification(intent.get('clarification')),warnings=warnings)
             if action=='other': return respond('Здравствуйте! Помогу с товарами и условиями покупки. Опишите задачу, название или артикул товара. Цены и наличие проверю по каталогу.',warnings=warnings)
             if pid:
                 # AI may select only visible session products or an ID literally present in the user text.
                 allowed={p['id'] for p in s.last_products}
                 if pid not in allowed: pid=None
+            if action in {'search','detail','alternatives'}:
+                s.last_search_query=query
             products=[await catalog.detail(pid,fresh=catalog.live)] if pid else await catalog.search(query)
             if action=='alternatives':
                 target=products[0] if len(products)==1 else next((p for p in products if p['id']==pid),None)
@@ -302,7 +317,7 @@ def create_app(catalog=None,ai=None):
             s.last_products=products
             warnings+=list(dict.fromkeys(w for p in products for w in p['warnings']))
             if not catalog.complete: warnings.append('Поиск охватывает загруженную выборку, не весь каталог. Точное наличие проверяется по карточке.')
-            return respond(text,products,sources=[{'title':p['name'],'url':p['product_url']} for p in products],warnings=warnings)
+            return respond(text,products,sources=[{'title':p['name'],'url':p['product_url']} for p in products if p.get('product_url')],warnings=warnings)
 
     dist=ROOT/'frontend'/'dist'
     if (dist/'assets').exists(): app.mount('/assets',StaticFiles(directory=dist/'assets'),name='assets')

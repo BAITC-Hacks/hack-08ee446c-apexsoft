@@ -14,6 +14,9 @@ from backend.language import detect_language, localize_response, localize_text, 
     ('900002', 'kk', 'kk'), ('2', 'kk', 'kk'), ('иә', 'kk', 'kk'),
     ('На русском, пожалуйста', 'kk', 'ru'), ('Орысша жауап бер', 'kk', 'ru'),
     ('Нужен кабель', 'kk', 'ru'), ('На казахском', 'ru', 'kk'),
+    ('что у вас есть', 'kk', 'ru'), ('шуруповёрт', 'kk', 'ru'),
+    ('а из аккумуляторных?', 'kk', 'ru'), ('Да', 'kk', 'ru'),
+    ('GL 1004D', 'kk', 'kk'), ('Менде автомат бар', 'kk', 'kk'),
 ])
 def test_language_switch_and_short_followup(message, previous, expected):
     assert detect_language(message, previous) == expected

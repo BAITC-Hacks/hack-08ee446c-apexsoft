@@ -5,9 +5,10 @@ import os
 import re
 import httpx
 from .clarification import TOPICS, QUESTIONS, ACKNOWLEDGEMENTS, respect_unavailable_parameters
+from .browsing import is_overview, prefer_named_tool_search
 
 SCHEMA={'type':'object','additionalProperties':False,'properties':{
- 'intent':{'type':'string','enum':['search','detail','alternatives','add','terms','clarify','other']},
+'intent':{'type':'string','enum':['search','detail','alternatives','add','terms','clarify','overview','other']},
  'query':{'type':'string'},'product_id':{'type':['string','null']},
  'quantity':{'type':['number','null'],'description':'Количество, явно запрошенное клиентом для добавления. Если клиент не указал количество, строго null, не 1. Числа в названии товара не являются количеством клиента.'},'reply':{'type':'string'},
  'clarification':{'type':['object','null'],'additionalProperties':False,'properties':{
@@ -73,6 +74,10 @@ acknowledgement=unknown_parameters только если клиент явно �
 acknowledgement=none. После «220 В, 40 Вт, сечения не знаю» не задавай rating или cable_spec:
 выбери marking. Если фото недоступно и клиент просит варианты, переходи к поиску по известным словам.
 Если известен конкретный артикул/марка/ID или клиент просит показать варианты категории, используй search.
+Название типа инструмента (шуруповёрт, дрель, перфоратор) уже достаточно для поиска: покажи
+реальные варианты прежде уточнений о бренде и мощности. Не спрашивай назначение по кругу.
+«Что у вас есть?» после названного товара означает search по последней категории из истории.
+Без предыдущего товара общий вопрос об ассортименте означает overview, query пустой.
 Не задерживай поиск известной марки требованием всех параметров. query содержит только ключевые слова
 из описания и истории, без вежливых фраз и без выдуманных характеристик. Для остальных intent clarification=null.
 reply всегда пустой: сервер формирует вопросы и товарные факты сам. Никакого markdown/HTML.
@@ -85,7 +90,7 @@ class AI:
         self.client=httpx.AsyncClient(timeout=18,follow_redirects=False)
 
     async def interpret(self,message,session,attachments):
-        fallback=respect_unavailable_parameters(self.fallback(message,session),message,session.history)
+        fallback=prefer_named_tool_search(respect_unavailable_parameters(self.fallback(message,session),message,session.history),message)
         if not self.key:
             return fallback,['OpenAI не настроен: работает ограниченный поиск по тексту/артикулу.']
         content=[{'type':'input_text','text':json.dumps({
@@ -104,14 +109,15 @@ class AI:
             text=''.join(c.get('text','') for out in body.get('output',[]) for c in out.get('content',[]) if c.get('type')=='output_text')
             result=json.loads(text)
             if not valid_intent(result): raise ValueError('Invalid intent response')
-            return respect_unavailable_parameters(result,message,session.history),[]
+            return prefer_named_tool_search(respect_unavailable_parameters(result,message,session.history),message),[]
         except (httpx.HTTPError,ValueError,KeyError,TypeError,AttributeError):
             return fallback,['OpenAI не ответил. Использован ограниченный поиск; содержимое фото не распознано.']
 
     def fallback(self,message,session):
         lower=message.lower(); intent='search'; pid=None; quantity=None
         clarification=None
-        if any(t in lower for t in ['достав','оплат','минималь','партия','самовывоз','жеткізу','төлем','төлеу','ең аз тапсырыс']): intent='terms'
+        if is_overview(message): intent='overview'
+        elif any(t in lower for t in ['достав','оплат','минималь','партия','самовывоз','жеткізу','төлем','төлеу','ең аз тапсырыс']): intent='terms'
         elif re.search(r'\b(привет|здравствуй|добрый день|сәлем|сәлеметсіз бе)\b',lower): intent='other'
         elif 'аналог' in lower or 'замен' in lower or 'балама' in lower: intent='alternatives'
         elif 'добав' in lower or 'положи' in lower or re.search(r'\bқос(?:шы|ыңыз)?\b',lower): intent='add'

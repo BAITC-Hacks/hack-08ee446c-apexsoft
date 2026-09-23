@@ -10,7 +10,7 @@ export interface Product {
   min_quantity: number;
   quantity_step: number;
   image_url: string | null;
-  product_url: string;
+  product_url: string | null;
   specifications: { name: string; value: string }[];
   certificates: { name: string; url: string }[];
   warehouses: { name: string; stock: number | null }[];
