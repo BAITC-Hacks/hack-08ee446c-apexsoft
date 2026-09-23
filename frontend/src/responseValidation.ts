@@ -56,7 +56,7 @@ const product = objectOf<Product>({
   min_quantity: positive,
   quantity_step: positive,
   image_url: nullable(string),
-  product_url: string,
+  product_url: nullable(string),
   specifications: arrayOf(
     objectOf<{ name: string; value: string }>({ name: string, value: string }),
   ),

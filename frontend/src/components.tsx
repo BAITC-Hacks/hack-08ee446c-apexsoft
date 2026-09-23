@@ -72,9 +72,13 @@ export function ProductCard({
   const quantityId = useId();
   const [quantity, setQuantity] = useState(String(product.min_quantity || 1));
   const [imageFailed, setImageFailed] = useState(false);
+  const [descriptionExpanded, setDescriptionExpanded] = useState(false);
   const error = quantityError(product, Number(quantity), existing);
   const image = safeUrl(product.image_url);
   const url = safeUrl(product.product_url);
+  const productUrl = url && !/^\/(?:catalog\/?)?$/.test(new URL(url).pathname) ? url : null;
+  const description = product.description.trim();
+  const longDescription = description.length > 320;
   const date = new Date(product.checked_at);
   const stock = product.stock;
   return (
@@ -89,7 +93,10 @@ export function ProductCard({
               onError={() => setImageFailed(true)}
             />
           ) : (
-            <Package size={29} strokeWidth={1.3} />
+            <span className="product-image-placeholder">
+              <Package size={29} strokeWidth={1.3} aria-hidden="true" />
+              <span>{imageFailed ? "Фото не загрузилось" : "Нет фото"}</span>
+            </span>
           )}
         </div>
         <div>
@@ -106,6 +113,24 @@ export function ProductCard({
           </div>
         </div>
       </div>
+      <div className="product-description">
+        <p>{description
+          ? longDescription && !descriptionExpanded
+            ? `${description.slice(0, 320).replace(/\s+\S*$/, "")}…`
+            : description
+          : "Описание в каталоге не указано."}</p>
+        {longDescription && (
+          <button className="text-link" type="button" aria-expanded={descriptionExpanded}
+            onClick={() => setDescriptionExpanded(!descriptionExpanded)}>
+            {descriptionExpanded ? "Свернуть описание" : "Читать описание полностью"}
+          </button>
+        )}
+      </div>
+      {productUrl ? (
+        <a className="text-link" href={productUrl} target="_blank" rel="noreferrer">
+          Открыть товар на ekt.kz <ArrowUpRight size={14} />
+        </a>
+      ) : <p className="product-link-missing">Ссылка на товар в каталоге не указана.</p>}
       {product.analogue_reason && (
         <p className="analogue-reason">
           <RefreshCw size={15} />
@@ -115,7 +140,6 @@ export function ProductCard({
       <Warnings messages={product.warnings} />
       <details className="product-details">
         <summary>Характеристики и документы</summary>
-        {product.description && <p>{product.description}</p>}
         {product.specifications.length ? (
           <dl>
             {product.specifications.map((spec, index) => (
@@ -160,12 +184,6 @@ export function ProductCard({
             <p>Сертификат в каталоге не указан.</p>
           )}
         </div>
-        {url && (
-          <a className="text-link" href={url} target="_blank" rel="noreferrer">
-            Карточка на ekt.kz
-            <ArrowUpRight size={14} />
-          </a>
-        )}
       </details>
       <div className="product-price-row">
         <strong>{money(product.price)}</strong>
